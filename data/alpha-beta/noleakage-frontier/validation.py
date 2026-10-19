@@ -43,6 +43,8 @@ _leak = _sibling("leakage_audit.py", "noleak_leakage_audit")
 _struct = _sibling("structure_checks.py", "noleak_structure_checks")
 
 SYSTEM_PROMPT = _prompt.SYSTEM_PROMPT
+SYSTEM_PROMPT_ONE_SHOT = _prompt.SYSTEM_PROMPT_ONE_SHOT
+system_prompt = _prompt.system_prompt
 _action_text = _prompt._action_text
 build_user_prompt = _prompt.build_user_prompt
 
@@ -56,6 +58,7 @@ DECISION_RE = _struct.DECISION_RE
 SECTION_RE = _struct.SECTION_RE
 validate_pinned_action = _struct.validate_pinned_action
 validate_reasoning_structure = _struct.validate_reasoning_structure
+validate_ev_supports_action = _struct.validate_ev_supports_action
 
 
 # --------------------------------------------------------------- audit CLI

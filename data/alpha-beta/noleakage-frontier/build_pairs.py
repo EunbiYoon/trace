@@ -134,10 +134,11 @@ def teacher_paraphraser(
 
     def paraphrase(
         *, history_prompt: str, solver_action: Any,
-        opponent_action: Any = None, **_: Any
+        opponent_action: Any = None, one_shot: bool = False, attempt: int = 0,
+        **_: Any
     ) -> str:
         messages = [
-            {"role": "system", "content": no_leak.SYSTEM_PROMPT},
+            {"role": "system", "content": no_leak.system_prompt(one_shot=one_shot)},
             {"role": "user", "content": no_leak.build_user_prompt(
                 history_prompt=history_prompt,
                 solver_action=solver_action,
@@ -150,11 +151,17 @@ def teacher_paraphraser(
         inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False)
         device = next(model.parameters()).device
         inputs = {key: value.to(device) for key, value in inputs.items()}
+        # Attempt 0 is greedy (reproducible); retries after a failed validation
+        # sample with a fixed per-attempt seed so a rerun yields the same pairs.
+        sample = attempt > 0
+        if sample:
+            torch.manual_seed(1000003 * attempt + len(history_prompt))
         with torch.inference_mode():
             output = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
+                do_sample=sample,
+                temperature=0.7 if sample else None,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=stop_ids,
             )
@@ -292,11 +299,10 @@ _ACTION_TAG_RE = re.compile(r"(<action>)\s*.*?\s*(</action>)", re.I | re.S)
 
 
 def _solver_labelled_chosen(blind_completion: str, solver_action: Any) -> str | None:
-    """Paper §3.1: one-shot / large-action games (auction, negotiation, and the
-    other one-round games) get SOLVER-LABELLED pairs — the blind reasoning is
-    kept verbatim and only the ``<action>`` payload is repinned to the solver
-    best response. The §2.3 posterior-EV frontier paraphrase is reserved for
-    simultaneous-move repeated games, whose SYSTEM prompt it is written for.
+    """LEGACY (A1_ONE_SHOT_VERBATIM=1 only). Keeps the blind reasoning verbatim
+    and repins only ``<action>``, so chosen and rejected share one <think> that
+    argues for the rejected action. The paper (§2.2) paraphrases every chosen
+    side; this path exists only to reproduce the old data.
     """
     label = no_leak._action_text(solver_action)
     if len(_ACTION_TAG_RE.findall(blind_completion)) != 1:
@@ -304,6 +310,20 @@ def _solver_labelled_chosen(blind_completion: str, solver_action: Any) -> str | 
     return _ACTION_TAG_RE.sub(
         lambda m: f"{m.group(1)}{label}{m.group(2)}", blind_completion, count=1
     )
+
+
+def _validate_paraphrase(chosen: str, cand: dict[str, Any]) -> tuple[list[str], list[Any]]:
+    errors = no_leak.validate_pinned_action(chosen, cand["solver_action"])
+    reasoning_match = re.search(r"<think>(.*?)</think>", chosen, re.I | re.S)
+    if reasoning_match is None:
+        return errors + ["missing <think> block"], []
+    reasoning = reasoning_match.group(1)
+    # A one-shot round has no future, like a final round (structure waiver).
+    errors.extend(no_leak.validate_reasoning_structure(
+        reasoning, is_final_round=cand["is_final_round"] or bool(cand.get("one_shot"))))
+    errors.extend(no_leak.validate_ev_supports_action(chosen, cand["solver_action"]))
+    flags = no_leak.audit_reasoning(reasoning, round_number=cand["round_index"] + 1)
+    return errors, flags
 
 
 def _pair_from_candidate(
@@ -323,10 +343,13 @@ def _pair_from_candidate(
     returns ``None`` and appends ``{"round", "errors"}`` to ``skipped`` so a
     batch ceiling can be enforced.
     """
+    import os
+
     index = cand["round_index"]
     is_final_round = cand["is_final_round"]
+    attempts_used = 0
 
-    if cand.get("one_shot"):
+    if cand.get("one_shot") and os.environ.get("A1_ONE_SHOT_VERBATIM") == "1":
         chosen = _solver_labelled_chosen(cand["rejected"], cand["solver_action"])
         want = no_leak._action_text(cand["solver_action"])
         if chosen is None:
@@ -341,24 +364,25 @@ def _pair_from_candidate(
         chosen_reasoning = "blind-verbatim"
     else:
         if paraphrase is None:
-            raise ValueError("a paraphraser is required for repeated-game rounds")
-        chosen = paraphrase(
-            round_index=index,
-            history_prompt=cand["prompt"],
-            opponent_action=cand["opponent_action"],
-            solver_action=cand["solver_action"],
-        ).strip()
-        errors = no_leak.validate_pinned_action(chosen, cand["solver_action"])
-        reasoning_match = re.search(r"<think>(.*?)</think>", chosen, re.I | re.S)
-        if reasoning_match is None:
-            errors.append("missing <think> block")
-            flags = []
-        else:
-            reasoning = reasoning_match.group(1)
-            errors.extend(
-                no_leak.validate_reasoning_structure(reasoning, is_final_round=is_final_round)
-            )
-            flags = no_leak.audit_reasoning(reasoning, round_number=index + 1)
+            raise ValueError("a paraphraser is required (paper §2.2 paraphrases every chosen side)")
+        # Paper §2.2: reasoning is conditioned on the solver action and the
+        # preceding history, not on the opponent's simultaneous move.
+        see_opponent = os.environ.get("A1_PARAPHRASE_SEE_OPPONENT") == "1"
+        max_attempts = max(1, int(os.environ.get("A1_PARAPHRASE_ATTEMPTS", "3")))
+        chosen, errors, flags = "", ["not generated"], []
+        for attempt in range(max_attempts):
+            attempts_used = attempt + 1
+            chosen = paraphrase(
+                round_index=index,
+                history_prompt=cand["prompt"],
+                opponent_action=cand["opponent_action"] if see_opponent else None,
+                solver_action=cand["solver_action"],
+                one_shot=bool(cand.get("one_shot")),
+                attempt=attempt,
+            ).strip()
+            errors, flags = _validate_paraphrase(chosen, cand)
+            if not errors:
+                break
         chosen_reasoning = "frontier-no-leak"
 
     if errors:
@@ -381,6 +405,7 @@ def _pair_from_candidate(
         "provenance": {
             "pipeline": PAIR_PIPELINE,
             "chosen_reasoning": chosen_reasoning,
+            "paraphrase_attempts": attempts_used,
             "chosen_action": "solver-best-response",
             "rejected": "blind-round-completion",
             "filter": cand["filter"],
@@ -437,7 +462,7 @@ def build_pairs(
     if on_invalid not in {"raise", "skip"}:
         raise ValueError("on_invalid must be 'raise' or 'skip'")
     candidates = _collect_candidates(row, counterfactual_mode=counterfactual_mode)
-    if paraphrase is None and any(not c.get("one_shot") for c in candidates):
+    if paraphrase is None and candidates:
         paraphrase = _existing_paraphraser(row)
     pairs: list[dict[str, Any]] = []
     for cand in candidates:
@@ -542,9 +567,13 @@ def build_file(
     )
 
     # -------- pass 2: build the survivors --------
-    # One-shot rounds are solver-labelled (§3.1) and never hit the teacher, so
-    # skip the (expensive) model load when nothing repeated survived.
-    needs_teacher = provider == "teacher" and any(not c.get("one_shot") for c in candidates)
+    # Every chosen side is paraphrased (paper §2.2), one-shot rounds included,
+    # unless the legacy verbatim path is explicitly requested.
+    import os
+
+    legacy_one_shot = os.environ.get("A1_ONE_SHOT_VERBATIM") == "1"
+    needs_teacher = provider == "teacher" and any(
+        not (c.get("one_shot") and legacy_one_shot) for c in candidates)
     shared = (
         teacher_paraphraser(expected_model, max_new_tokens=teacher_max_new_tokens)
         if needs_teacher
@@ -555,7 +584,7 @@ def build_file(
     started = time.monotonic()
     with destination.open("w", encoding="utf-8") as dst:
         for position, cand in enumerate(candidates, 1):
-            if cand.get("one_shot"):
+            if cand.get("one_shot") and legacy_one_shot:
                 paraphrase: Callable[..., str] | None = None
             elif shared is not None:
                 paraphrase = shared

@@ -61,8 +61,8 @@ class TrainingPairPipelineTests(unittest.TestCase):
                 "<think>blind two</think><action>C</action>",
             ],
             "frontier_completions": [
-                "<think>[Prior] cooperative type probability 0.5\n[Update] posterior remains uncertain\n[EV] EV(D)=0.5 * 5 + 0.5 * 1; EV(C)=0.5 * 3 + 0.5 * 0\n[DECISION] D</think><action>D</action>",
-                "<think>[Prior] cooperative type probability 0.8\n[Update] prior cooperation supports this posterior\n[EV] EV(D)=0.8 * 5 + 0.2 * 1; EV(C)=0.8 * 3 + 0.2 * 0\n[DECISION] D</think><action>D</action>",
+                "<think>[Prior] cooperative type probability 0.5\n[Update] posterior remains uncertain\n[EV] EV(D)=0.5 * 5 + 0.5 * 1 = 3.0; EV(C)=0.5 * 3 + 0.5 * 0 = 1.5\n[DECISION] D</think><action>D</action>",
+                "<think>[Prior] cooperative type probability 0.8\n[Update] prior cooperation supports this posterior\n[EV] EV(D)=0.8 * 5 + 0.2 * 1 = 4.2; EV(C)=0.8 * 3 + 0.2 * 0 = 2.4\n[DECISION] D</think><action>D</action>",
             ],
         }
         pairs = build_pairs(row)
@@ -87,10 +87,10 @@ class TrainingPairPipelineTests(unittest.TestCase):
                 "<think>blind two</think><action>C</action>",
             ],
             "frontier_completions": [
-                "<think>[Prior] p=0.5\n[Update] unchanged\n[EV] EV(D)=0.5 * 5 + 0.5 * 1\n[DECISION] D</think><action>D</action>",
+                "<think>[Prior] p=0.5\n[Update] unchanged\n[EV] EV(D)=0.5 * 5 + 0.5 * 1 = 3.0; EV(C)=0.5 * 3 + 0.5 * 0 = 1.5\n[DECISION] D</think><action>D</action>",
                 "<think>[Prior] cooperative type probability 0.8\n"
                 "[Update] the opponent cooperated in round 1, a prior round\n"
-                "[EV] EV(D)=0.8 * 5 + 0.2 * 1\n[DECISION] D</think><action>D</action>",
+                "[EV] EV(D)=0.8 * 5 + 0.2 * 1 = 4.2; EV(C)=0.8 * 3 + 0.2 * 0 = 2.4\n[DECISION] D</think><action>D</action>",
             ],
         }
         pairs = build_pairs(row)
@@ -130,7 +130,7 @@ class TrainingPairPipelineTests(unittest.TestCase):
                 "<think>blind two</think><action>C</action>",
             ],
             "frontier_completions": [
-                "<think>[Prior] p=0.5\n[Update] unchanged\n[EV] EV(D)=0.5 * 5 + 0.5 * 1\n[DECISION] D</think><action>D</action>",
+                "<think>[Prior] p=0.5\n[Update] unchanged\n[EV] EV(D)=0.5 * 5 + 0.5 * 1 = 3.0; EV(C)=0.5 * 3 + 0.5 * 0 = 1.5\n[DECISION] D</think><action>D</action>",
                 # accepted round, but the [EV] slot has no probability-weighted
                 # arithmetic and there is no <action> block
                 "<think>[Prior] p=0.8\n[Update] unchanged\n[EV] D just looks better\n[DECISION] D</think>",
@@ -158,6 +158,71 @@ class TrainingPairPipelineTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "round_prompts"):
             build_pairs(row)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+BOS_PAYOFFS = [
+    {"own": "Opera", "opponent": "Opera", "payoff": [3, 2]},
+    {"own": "Opera", "opponent": "Football", "payoff": [0, 0]},
+    {"own": "Football", "opponent": "Opera", "payoff": [0, 0]},
+    {"own": "Football", "opponent": "Football", "payoff": [2, 3]},
+]
+GOOD_BOS = ("<think>[Prior] opponent plays Opera with probability 0.7\n[Update] No completed rounds; "
+            "the prior is unchanged.\n[EV] EV(Opera) = 0.7*3 + 0.3*0 = 2.1; EV(Football) = 0.7*0 + "
+            "0.3*2 = 0.6\n[DECISION] Opera</think><action>Opera</action>")
+DECOUPLED_BOS = ("<think>[Prior] probability 0.5\n[Update] No completed rounds; the prior is unchanged.\n"
+                 "[EV] EV(Opera) = 0.5*3 + 0.5*0 = 1.5; EV(Football) = 0.5*0 + 0.5*4 = 2.0\n"
+                 "[DECISION] Opera</think><action>Opera</action>")
+
+
+def _bos_row():
+    return {
+        "id": "bos-one-shot", "game": "bos", "game_family": "bos", "opponent": "always_cooperate",
+        "legal_actions": ["Opera", "Football"], "payoffs": BOS_PAYOFFS,
+        "own_actions": ["Football"], "opponent_actions": ["Opera"],
+        "round_prompts": ["one-shot BoS prompt"],
+        "round_completions": ["<think>[Decision] Football</think><action>Football</action>"],
+    }
+
+
+class PaperAlignedParaphraseTests(unittest.TestCase):
+    """Paper §2.2: every chosen side is a no-leak paraphrase that supports the
+    solver action, written without the opponent's simultaneous move."""
+
+    def test_one_shot_chosen_is_paraphrased_not_blind_verbatim(self):
+        calls = []
+
+        def teacher(**kw):
+            calls.append(kw)
+            return GOOD_BOS
+
+        pairs = build_pairs(_bos_row(), teacher)
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["provenance"]["chosen_reasoning"], "frontier-no-leak")
+        self.assertNotIn("[Decision] Football", pairs[0]["chosen"])
+        self.assertTrue(calls[0]["one_shot"])
+        self.assertIsNone(calls[0]["opponent_action"], "teacher must not see the simultaneous move")
+
+    def test_decoupled_ev_is_retried_then_skipped(self):
+        calls = []
+
+        def teacher(**kw):
+            calls.append(kw["attempt"])
+            return DECOUPLED_BOS
+
+        skipped = []
+        pairs = build_pairs(_bos_row(), teacher, on_invalid="skip", skipped=skipped)
+        self.assertEqual(pairs, [])
+        self.assertEqual(calls, [0, 1, 2])
+        self.assertTrue(any("argmax" in e for e in skipped[0]["errors"]))
+
+    def test_retry_recovers(self):
+        outputs = iter([DECOUPLED_BOS, GOOD_BOS])
+        pairs = build_pairs(_bos_row(), lambda **kw: next(outputs))
+        self.assertEqual(pairs[0]["provenance"]["paraphrase_attempts"], 2)
 
 
 if __name__ == "__main__":

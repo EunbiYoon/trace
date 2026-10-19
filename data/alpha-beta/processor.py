@@ -116,30 +116,53 @@ def shard_path(variant: str, node: int) -> Path:
 
 # ---------------------------------------------------------------- assembly
 def _compose(per_episode: list[str]) -> None:
-    """paper Sec. 3.1: resample AUX (= CORE + auction/negotiation) and ALL to the
-    published pair counts. Skipped when the caps are unset."""
-    if not {"core", "aux", "all"}.issubset(per_episode):
-        return
-    aux_cap, all_cap = _cap("aux"), _cap("all")
-    if not aux_cap or not all_cap:
-        print(
-            "[compose] A1_MAX_PAIRS_AUX / A1_MAX_PAIRS_ALL unset -- keeping the raw "
-            "AUX/ALL merges (no stratified resample)",
-            file=sys.stderr,
-        )
+    """Paper Sec. 3.1 / Table 5 mixes, built as unions -- never resampled.
+
+    AUX = CORE + every auction/negotiation pair (AUX's own blind pool holds only
+    those two games). ALL is every pair Algorithm 1 emitted. Pair counts are
+    whatever the data yields and are what the paper should report.
+
+    The previous behaviour -- subsampling AUX/ALL to fixed totals and a fixed
+    number of special pairs ("the published pair counts") -- is not described in
+    the paper and selects data to hit a target number. It is kept only behind
+    A1_MATCH_PUBLISHED_COUNTS=1 for reproducing old files.
+    """
+    if not {"core", "aux"}.issubset(per_episode):
         return
     out = _outdir()
-    fams = bp.RW_UPSAMPLE_FAMILIES
-    bp.compose_stratified_mix(
-        out / FILES["aux"], out / FILES["aux"],
-        total_count=aux_cap, special_count=int(env("A1_AUX_SPECIAL_PAIRS", "110")),
-        special_families=fams, base=out / FILES["core"],
-    )
-    bp.compose_stratified_mix(
-        out / FILES["all"], out / FILES["all"],
-        total_count=all_cap, special_count=int(env("A1_ALL_SPECIAL_PAIRS", "137")),
-        special_families=fams,
-    )
+    if env("A1_MATCH_PUBLISHED_COUNTS") == "1":
+        print("[compose] WARNING: A1_MATCH_PUBLISHED_COUNTS=1 resamples AUX/ALL to fixed "
+              "counts; this is not the paper's procedure", file=sys.stderr)
+        aux_cap, all_cap = _cap("aux"), _cap("all")
+        if not aux_cap or not all_cap:
+            sys.exit("A1_MATCH_PUBLISHED_COUNTS=1 needs A1_MAX_PAIRS_AUX and A1_MAX_PAIRS_ALL")
+        fams = bp.RW_UPSAMPLE_FAMILIES
+        bp.compose_stratified_mix(
+            out / FILES["aux"], out / FILES["aux"],
+            total_count=aux_cap, special_count=int(env("A1_AUX_SPECIAL_PAIRS", "110")),
+            special_families=fams, base=out / FILES["core"],
+        )
+        if "all" in per_episode:
+            bp.compose_stratified_mix(
+                out / FILES["all"], out / FILES["all"],
+                total_count=all_cap, special_count=int(env("A1_ALL_SPECIAL_PAIRS", "137")),
+                special_families=fams,
+            )
+        return
+    rows, seen = [], set()
+    for name in ("core", "aux"):
+        for line in (out / FILES[name]).open(encoding="utf-8"):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            key = (row.get("prompt"), row.get("chosen"), row.get("rejected"))
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
+    with (out / FILES["aux"]).open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[compose] AUX = CORE + auction/negotiation = {len(rows)} pairs", file=sys.stderr)
 
 
 def _derive_rw() -> None:

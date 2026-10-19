@@ -124,3 +124,67 @@ def validate_reasoning_structure(
     if not EV_ARITHMETIC_RE.search(ev):
         errors.append("[EV] must show probability-weighted arithmetic")
     return errors
+
+
+def _coupling_parser():
+    """Paper Appendix E parser (eval/metric/coupling.py), shared with Table 3."""
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from eval.metric import coupling
+
+    return coupling
+
+
+_NUMERIC_EXPR = re.compile(r"^[\d\s.+\-*/()]+$")
+
+
+def _numeric(expr: str) -> float | None:
+    expr = expr.strip().replace("×", "*")
+    if not expr or not _NUMERIC_EXPR.match(expr) or not re.search(r"\d", expr):
+        return None
+    try:
+        return float(eval(expr, {"__builtins__": {}}, {}))  # digits/operators only (regex-guarded)
+    except Exception:
+        return None
+
+
+def _arithmetic_errors(reasoning: str, tolerance: float) -> list[str]:
+    """Each EV(x) = e1 = e2 = ... chain: consecutive numeric steps must agree."""
+    errors = []
+    for clause in re.split(r"(?=EV\()|[;\n]", reasoning):
+        if "=" not in clause:
+            continue
+        steps = [_numeric(part) for part in clause.split("=")[1:]]
+        for a, b in zip(steps, steps[1:]):
+            if a is not None and b is not None and abs(a - b) > tolerance:
+                errors.append(f"[EV] arithmetic step is wrong: {clause.strip()[:80]!r}")
+                break
+    return errors
+
+
+def validate_ev_supports_action(text: str, solver_action: Any, *, tolerance: float = 0.05) -> list[str]:
+    """Paper §2.2: the rationale must support the solver action.
+
+    * the supplied action is the unique argmax of the stated EVs, judged by the
+      same parser that computes reasoning-action coupling (Table 3);
+    * every purely numeric "= expr = value" step evaluates to its stated value
+      (catches "0.9*1 + 0.1*5 = 2.7"-style arithmetic slips).
+    """
+    coupling = _coupling_parser()
+    reasoning_match = re.search(r"<think>(.*?)</think>", text, re.I | re.S)
+    reasoning = reasoning_match.group(1) if reasoning_match else text
+    errors: list[str] = []
+    evs = coupling.parse_ev_slot(reasoning)
+    if len(evs) < 2:
+        errors.append("[EV] must state expected values for at least two actions")
+    else:
+        result = coupling.coupling_for_round(reasoning, _action_text(solver_action))
+        if not result.coupled:
+            best = coupling.argmax_stated_ev(evs)
+            errors.append(
+                f"[EV] argmax is {best!r}, not the solver action {_action_text(solver_action)!r}"
+            )
+    errors.extend(_arithmetic_errors(reasoning, tolerance))
+    return errors
+

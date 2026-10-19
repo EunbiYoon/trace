@@ -31,7 +31,7 @@ class BlindRolloutTests(unittest.TestCase):
             seed=42,
             STUDENT_MODEL="Qwen/Qwen2.5-7B-Instruct",
         ))
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), module.game_unit_count("pd-classic", 1))  # Appendix I weights
         row = rows[0]
         self.assertEqual(row["frontier_model"], "Qwen/Qwen2.5-7B-Instruct")
         self.assertEqual(len(row["round_prompts"]), 10)
@@ -48,7 +48,7 @@ class BlindRolloutTests(unittest.TestCase):
             STUDENT_MODEL="Qwen/Qwen2.5-7B-Instruct",
         )
         whole = [r["id"] for r in rollout_game(**kwargs)]
-        self.assertEqual(len(whole), 18)  # 6 opponents x 3 episodes
+        self.assertEqual(len(whole), module.game_unit_count("pd-classic", 3))  # weighted, App. I
         pieces: list[str] = []
         for shard_index in range(3):
             part = [
@@ -120,6 +120,24 @@ class WriteTrajectoriesTests(unittest.TestCase):
             output = Path(directory) / "shard.jsonl"
             with self.assertRaisesRegex(RuntimeError, "empty or fallback reasoning"):
                 write_trajectories(iter([row]), output, total=1)
+
+
+
+class AppendixIPoolTests(unittest.TestCase):
+    def test_repeated_pool_is_deterministic_and_weighted(self):
+        pool = module.OPPONENTS_BY_GAME["pd-classic"]
+        self.assertNotIn("random", pool)
+        self.assertNotIn("epsilon_greedy", pool)
+        counts = {o: module.episodes_for("pd-classic", o, 10) for o in pool}
+        self.assertEqual(counts["tit_for_tat"], 20)
+        self.assertEqual(counts["pavlov"], 15)
+        self.assertEqual(counts["always_defect"], 10)
+
+    def test_auction_and_bargaining_pools(self):
+        self.assertEqual(set(module.OPPONENTS_BY_GAME["auction"]),
+                         {"truthful_bidder", "shaded_bidder_low", "shaded_bidder_high", "random_uniform_bidder"})
+        self.assertEqual(set(module.OPPONENTS_BY_GAME["negotiation"]),
+                         {"greedy_bargainer", "equal_split_bargainer", "nash_bargainer", "random_bargainer"})
 
 
 if __name__ == "__main__":

@@ -39,8 +39,9 @@
 #   HB_STRATEGIES        S1,S2,S3,S4            comma-separated subset
 #   HB_DEDUP             context                none | full | context | position
 #   HB_MAX_PAIRS         (unset)               hard cap on the pair count
-#   HB_MAX_PAIRS_<VARIANT> (unset)             per-variant cap, e.g.
-#                                              HB_MAX_PAIRS_FILTER_ON=400 (Table 7)
+#   HB_MAX_PAIRS_<VARIANT> (unset)             per-variant cap. Leave UNSET for the
+#                                              paper (Appendix B reports the natural
+#                                              counts; the old 400/400 files were capped)
 set -euo pipefail
 
 MODE="${1:-}"                                   # "" | 1 | 2 | ... | merge | pairs

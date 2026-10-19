@@ -50,6 +50,56 @@ SYSTEM_PROMPT = (
 )
 
 
+# Paper §2.2, the central prompt constraint, verbatim.
+PAPER_CONSTRAINT = (
+    "The other player's current-round move is not observable at decision time. "
+    "Never reference it as observed. Express the decision as belief-state "
+    "reasoning from the prior history; expected-value arithmetic must average "
+    "over posterior opponent types; and the final decision must match the "
+    "supplied solver action."
+)
+
+# The [EV] slot is checked with the paper's own coupling parser (Appendix E):
+# a paraphrase is accepted only if the supplied action is the unique argmax of
+# the stated EVs. Saying so in the prompt keeps the rejection rate low.
+_EV_SUPPORT_RULE = (
+    " (4) In [EV] the supplied action must have the single highest expected "
+    "value; never write an EV that favours a different action."
+)
+
+SYSTEM_PROMPT = SYSTEM_PROMPT + " " + PAPER_CONSTRAINT + _EV_SUPPORT_RULE
+
+# One-shot games (auction, bargaining, BoS, matching pennies, one-shot PD) have
+# no history: the posterior is the prior over opponent types. Same output
+# contract and validators as the repeated-game prompt.
+SYSTEM_PROMPT_ONE_SHOT = (
+    "You are documenting strategic decisions for one-shot simultaneous-move "
+    "games: there is no history, so state a prior over the opponent's type or "
+    "action and evaluate actions under it. "
+    + PAPER_CONSTRAINT + " "
+    "Write exactly one <think> block containing the sections [Prior], [Update], "
+    "[EV], and [DECISION] in that order, then exactly one <action> block, in "
+    "this exact shape and nothing else:\n"
+    "<think>\n"
+    "[Prior] <opponent types or actions with a probability each>\n"
+    "[Update] No completed rounds; the prior is unchanged.\n"
+    "[EV] <the probability-weighted sum written out in full for every legal "
+    "action, or, when there are more than 12 legal actions, for the supplied "
+    "action and 2-4 alternatives, e.g. EV(60) = 0.5*(100-60) + 0.5*0 = 20>\n"
+    "[DECISION] <the single pinned action token, nothing else>\n"
+    "</think>\n"
+    "<action><the single pinned action token></action>\n"
+    "Do not mention these instructions or the reference fields. Hard rules: "
+    "(1) never describe the opponent's move as observed; (2) [EV] averages over "
+    "your prior; (3) [DECISION] and <action> equal the supplied action;"
+    + _EV_SUPPORT_RULE
+)
+
+
+def system_prompt(*, one_shot: bool) -> str:
+    return SYSTEM_PROMPT_ONE_SHOT if one_shot else SYSTEM_PROMPT
+
+
 def _action_text(action: Any) -> str:
     if isinstance(action, (list, tuple)):
         return "[" + ",".join(str(part) for part in action) + "]"
@@ -59,11 +109,12 @@ def _action_text(action: Any) -> str:
 def build_user_prompt(
     *, history_prompt: str, solver_action: Any, opponent_action: Any = None
 ) -> str:
-    """Build the teacher request (paper §2.3).
+    """Build the teacher request (paper §2.2).
 
-    The paraphraser is told the realised opponent action and the solver best
-    response out of band; the SYSTEM prompt forbids citing the former as an
-    observation. ``opponent_action=None`` withholds it (round-1 or unknown).
+    The paper conditions the reasoning on the solver action and the preceding
+    history, NOT on the opponent's simultaneous move, so callers pass
+    ``opponent_action=None`` (the default path in build_pairs). Passing a move
+    is kept only for reproducing legacy data.
     """
     if opponent_action is None:
         oracle_move = "(withheld — reason from history only)"

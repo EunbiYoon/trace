@@ -107,7 +107,7 @@ class LoRALLMAgent:
     def decide(self, obs: dict[str, Any]) -> tuple[str, Any]:
         # One malformed sample (e.g. <p>…</p> instead of <think>…</think>) must
         # not kill a multi-hour shard: regenerate once before giving up.
-        attempts = 2 if self.strict_output else 1
+        attempts = int(__import__("os").environ.get("BLIND_STRICT_ATTEMPTS", "4")) if self.strict_output else 1
         last_response = ""
         for attempt in range(attempts):
             response = self._generate(obs)

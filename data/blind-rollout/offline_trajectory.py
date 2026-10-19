@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-import torch
 
 ROOT = next(
     p for p in Path(__file__).resolve().parents if (p / "config.py").is_file()
@@ -41,13 +40,25 @@ SUPPORTED_GAMES = (
     "bos", "matching-pennies", "negotiation", "auction", "ipd-stage",
 )
 
-# Repeated-game pools exclude stochastic policies that cannot be replayed by
-# the exact counterfactual filter. One-shot games only need the realised move.
-REPEATED_OPPONENTS = (
-    "always_cooperate", "always_defect", "tit_for_tat", "grim_trigger",
-    "pavlov", "tit_for_two_tats",
-)
-ONE_SHOT_MATRIX_OPPONENTS = REPEATED_OPPONENTS + ("random", "epsilon_greedy")
+# Training opponent pools, paper Appendix I, as {policy: weight}. Weight w
+# means round(w * E) episodes for E = --episodes-per-combination, i.e. the
+# weighted sampling of Appendix I realised as an exact stratified allocation.
+#
+# Repeated games keep only the deterministic members of the Appendix I matrix
+# pool: §2.3 requires deterministic opponents for the exact counterfactual
+# (Eq. 2/3), so Random / EpsilonGreedy / GenerousTFT cannot be replayed. The
+# paper lists all nine under "repeated 2x2 matrix games"; its text should say
+# the training pool is the deterministic subset.
+REPEATED_OPPONENTS = {
+    "tit_for_tat": 2.0, "grim_trigger": 2.0, "tit_for_two_tats": 1.5,
+    "pavlov": 1.5, "always_cooperate": 1.0, "always_defect": 1.0,
+}
+# One-shot games need only the realised move, so stochastic policies are fine.
+# Appendix I does not list a pool for one-shot matrix games; equal weights.
+ONE_SHOT_MATRIX_OPPONENTS = {
+    **{name: 1.0 for name in REPEATED_OPPONENTS},
+    "random": 1.0, "epsilon_greedy": 1.0,
+}
 OPPONENTS_BY_GAME = {
     "pd-classic": REPEATED_OPPONENTS,
     "pd-tight": REPEATED_OPPONENTS,
@@ -56,9 +67,18 @@ OPPONENTS_BY_GAME = {
     "bos": ONE_SHOT_MATRIX_OPPONENTS,
     "matching-pennies": ONE_SHOT_MATRIX_OPPONENTS,
     "ipd-stage": ONE_SHOT_MATRIX_OPPONENTS,
-    "negotiation": ("always_cooperate", "always_defect", "random", "epsilon_greedy"),
-    "auction": ("truthful_bidder", "always_cooperate", "random", "epsilon_greedy"),
+    # Appendix I: bargaining and auction heuristic pools.
+    "negotiation": dict(config.BARGAINING_POOL),
+    "auction": dict(config.AUCTION_POOL),
 }
+# Episodes whose teacher output stays malformed after the agent's retries are
+# dropped and counted; the shard fails only above this fraction.
+BLIND_MAX_FAILED_FRACTION = float(os.environ.get("BLIND_MAX_FAILED_FRACTION", "0.05"))
+
+
+def episodes_for(game: str, opponent: str, episodes_per_combination: int) -> int:
+    # Round half up: Python's round() is banker's rounding (round(4.5) == 4).
+    return int(OPPONENTS_BY_GAME[game][opponent] * episodes_per_combination + 0.5)
 
 
 def _matrix_rows(
@@ -107,7 +127,7 @@ def game_spec(game: str, result: EpisodeResult) -> dict[str, Any]:
 
 def game_unit_count(game: str, episodes_per_combination: int) -> int:
     """Number of indivisible (opponent, episode) work units for one game."""
-    return len(OPPONENTS_BY_GAME[game]) * episodes_per_combination
+    return sum(episodes_for(game, o, episodes_per_combination) for o in OPPONENTS_BY_GAME[game])
 
 
 def shard_unit_total(
@@ -140,10 +160,12 @@ def rollout_game(
     produces.
     """
     unit = -1
+    attempted = failed = 0
     for opponent_index, opponent in enumerate(OPPONENTS_BY_GAME[game]):
         combination_seed = seed + opponent_index * 1_000_000
         announced = False
-        for episode_index in range(episodes_per_combination):
+        n_episodes = episodes_for(game, opponent, episodes_per_combination)
+        for episode_index in range(n_episodes):
             unit += 1
             if num_shards > 1 and unit % num_shards != shard_index:
                 continue
@@ -152,17 +174,29 @@ def rollout_game(
                 announced = True
             episode = episode_index + 1
             print(
-                f"  running episode {episode}/{episodes_per_combination} "
+                f"  running episode {episode}/{n_episodes} "
                 f"({game} / {opponent})",
                 flush=True,
             )
+            attempted += 1
             # run_game_batch numbers its only episode as zero internally. The
             # adjusted base preserves the original batch's per-episode seed.
-            result = run_game_batch(
-                game, agent, 1,
-                seed_base=combination_seed + episode_index * 997,
-                opponent_name=opponent,
-            )[0]
+            try:
+                result = run_game_batch(
+                    game, agent, 1,
+                    seed_base=combination_seed + episode_index * 997,
+                    opponent_name=opponent,
+                )[0]
+            except RuntimeError as exc:
+                # strict_output exhausted its retries: drop this episode, not the shard.
+                failed += 1
+                print(f"  [dropped] {game}/{opponent} episode {episode}: {exc}"[:500], flush=True)
+                if failed > max(1, BLIND_MAX_FAILED_FRACTION * attempted) and attempted >= 20:
+                    raise RuntimeError(
+                        f"{failed}/{attempted} episodes dropped for malformed teacher output "
+                        f"(> {BLIND_MAX_FAILED_FRACTION:.0%}); check the output contract for this model"
+                    ) from exc
+                continue
             yield result.to_training_trajectory(
                 # The seed segment keeps ids unique when the same game is rolled
                 # at several seeds and the shards are merged into one file; pair
@@ -171,6 +205,8 @@ def rollout_game(
                 game_spec=game_spec(game, result),
                 frontier_model=STUDENT_MODEL,
             )
+    if failed:
+        print(f"{game}: dropped {failed}/{attempted} episodes for malformed teacher output", flush=True)
 
 
 def write_trajectories(
@@ -231,6 +267,8 @@ def _duration(seconds: float) -> str:
 
 
 def main() -> None:
+    import torch  # lazy: the rollout logic is testable without a GPU stack
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--games", default=",".join(config.BLIND_GAMES))

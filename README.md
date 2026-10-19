@@ -20,6 +20,37 @@ tit-for-tat is measured by the same evaluation that scores the student.
   ((Hare,Hare) shown as 2, rewarded as 1). Regenerate all stages; do not mix
   them with Gemma data.
 
+## Data construction follows the paper
+
+* **Every chosen side is a no-leak paraphrase** (§2.2), one-shot games
+  included. The old path that kept the blind reasoning and swapped only
+  `<action>` (chosen and rejected then share one `<think>` arguing for the
+  rejected action) is available only as `A1_ONE_SHOT_VERBATIM=1`.
+* **The paraphraser never sees the opponent's simultaneous move** (abstract,
+  §2.2); `A1_PARAPHRASE_SEE_OPPONENT=1` restores the legacy behaviour.
+* **A paraphrase is kept only if it supports the solver action**: the action is
+  the unique argmax of the stated EVs under the Appendix E coupling parser (the
+  Table 3 metric) and every arithmetic step is correct. Up to
+  `A1_PARAPHRASE_ATTEMPTS=3` tries (greedy, then seeded sampling); failures are
+  skipped and counted (`A1_MAX_INVALID_FRACTION`). On the committed Qwen-7B
+  data, 295/503 CORE paraphrases would fail this check.
+* **Opponent pools follow Appendix I**: repeated games use the deterministic
+  members with weights TFT 2, Grim 2, TF2T 1.5, Pavlov 1.5, AllC 1, AllD 1 as an
+  exact allocation of episodes; auction and bargaining use the Appendix I
+  bidders and bargainers. Random/ε-greedy/GenerousTFT cannot be replayed by
+  Eq. 2/3, so the paper text should call the repeated-game pool the
+  deterministic subset.
+* **Mixes are unions, never resampled**: AUX = CORE + all auction/negotiation
+  pairs, ALL = every emitted pair, RW = ALL with auction/negotiation ×4.
+  Subsampling to "published counts" exists only as `A1_MATCH_PUBLISHED_COUNTS=1`.
+  Hypothesis B is uncapped (leave `HB_MAX_PAIRS*` unset). Report the counts the
+  data yields.
+* **A malformed teacher output drops one episode, not the shard**
+  (`BLIND_STRICT_ATTEMPTS=4`, fail above `BLIND_MAX_FAILED_FRACTION=0.05`).
+* **Audit before training**: `python data/audit_pairs.py` recomputes Eq. 1,
+  Eq. 3, the blind-round linkage and the §2.2 checks independently and exits
+  non-zero on any violation (`--legacy-opponents` for the pre-fix data).
+
 ## Evaluation (paper §3.1, Tables 1-3, Figure 1)
 
 ```bash

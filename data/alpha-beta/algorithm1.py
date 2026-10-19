@@ -105,11 +105,10 @@ def algorithm1(row, *, mode, teacher, seen, skipped, stats, report, out) -> None
         cand = certified[t]
         key = (cand["prompt"], str(cand["solver_action"]))
         if key not in seen:                                      # replayed position -> paraphrase once
-            paraphrase = None
-            if not cand.get("one_shot"):
-                _log(f"[{stats['variant']}] generating episode {stats['ep']}, "
-                     f"round {t + 1}/{len(own)} ...")
-                paraphrase = teacher()                           # 8  rho*_t <- LLM_front
+            # 8  rho*_t <- LLM_front for every pair, one-shot included (paper §2.2)
+            _log(f"[{stats['variant']}] generating episode {stats['ep']}, "
+                 f"round {t + 1}/{len(own)} ...")
+            paraphrase = teacher()
             seen[key] = bp._pair_from_candidate(
                 cand, paraphrase, on_invalid="skip", skipped=skipped
             )

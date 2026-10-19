@@ -23,13 +23,15 @@ def opponent_action(name: str, history: History, legal_actions: Sequence[Any]) -
     if name == "always_defect": return defect
     if name == "tit_for_tat": return cooperate if not history else history[-1][0]
     if name == "grim_trigger": return defect if any(own == defect for own, _ in history) else cooperate
-    if name == "pavlov": return cooperate if not history else history[-1][1]
-    trailing = 0
-    for own, _ in reversed(history):
-        if own != defect: break
-        trailing += 1
-    if trailing >= 2: return defect
-    return cooperate if not history else history[-1][0]
+    # Must stay identical to eval/rollout/opponents.py (exact replay, Eq. 2/3).
+    if name == "pavlov":
+        # Win-stay, lose-shift: cooperate iff both chose the same kind of action.
+        if not history: return cooperate
+        own_prev, opp_prev = history[-1]
+        return cooperate if (own_prev == defect) == (opp_prev == defect) else defect
+    # tit_for_two_tats: defect only after two consecutive student defections.
+    if len(history) >= 2 and all(own == defect for own, _ in history[-2:]): return defect
+    return cooperate
 
 def stage_reward(payoffs: Payoffs, own_action: Any, opponent: Any) -> float:
     try: return float(payoffs[(own_action, opponent)])

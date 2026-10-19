@@ -26,23 +26,14 @@ from eval.rollout.games import EpisodeResult, run_game_batch
 
 
 def _load_blind_model(model_id: str):
-    """BF16 causal-LM load for the blind rollout.
+    """Load the blind-rollout teacher (BF16 by default; TEACHER_4BIT=1 for NF4).
 
-    Self-contained on purpose: blind rollout is data construction and must not
-    depend on the training package (no bitsandbytes, no LoRA, no 4-bit).
+    Uses the shared inference loader so Gemma 3-27B (multimodal checkpoint) is
+    loaded correctly and spread over all visible GPUs with device_map="auto".
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from eval.rollout.hf_loading import load_causal_lm
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-    )
-    return model, tokenizer
+    return load_causal_lm(model_id, use_4bit=config.TEACHER_4BIT)
 
 
 SUPPORTED_GAMES = (
@@ -91,10 +82,8 @@ def game_spec(game: str, result: EpisodeResult) -> dict[str, Any]:
         return {"game_family": "matrix", "legal_actions": ["C", "D"],
                 "payoffs": _matrix_rows(("C", "D"), payoff)}
     if game == "stag-hunt":
-        payoff = {
-            ("Stag", "Stag"): (4, 4), ("Stag", "Hare"): (0, 3),
-            ("Hare", "Stag"): (3, 0), ("Hare", "Hare"): (1, 1),
-        }
+        sp, acts = config.STAG_PAYOFFS, ("Stag", "Hare")
+        payoff = {(acts[i], acts[j]): (sp[(i, j)], sp[(j, i)]) for i in range(2) for j in range(2)}
         return {"game_family": "matrix", "legal_actions": ["Stag", "Hare"],
                 "payoffs": _matrix_rows(("Stag", "Hare"), payoff)}
     if game in {"bos", "matching-pennies"}:

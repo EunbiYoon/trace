@@ -105,3 +105,7 @@ class ProgressAgent:
     reasoning, action = self.inner.decide(obs)
     self.logger.infer_done(step, game, action, time.perf_counter() - t0)
     return reasoning, action
+
+  @property
+  def last_meta(self):
+    return getattr(self.inner, "last_meta", None)

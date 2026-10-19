@@ -112,7 +112,13 @@ OLLAMA_FRONTIER_MODEL = "llama3.1:8b"  # Table 1 Llama 3.1–8B via local Ollama
 
 # Qwen2.5-3B-Instruct, LoRA r=16 alpha=32 dropout=0.05, DPO beta=0.1
 STUDENT_MODEL = _env_str("STUDENT_MODEL", "Qwen/Qwen2.5-3B-Instruct")
-TEACHER_MODEL = _env_str("TEACHER_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+# Teacher = blind-rollout policy (Algorithm 1 line 1) AND no-leak paraphraser (§2.2).
+# Gemma 3-27B is also a Table 1 frontier reference, so the teacher's own TFT
+# failure is measured by the same eval that scores the student.
+TEACHER_MODEL = _env_str("TEACHER_MODEL", "google/gemma-3-27b-it")
+# 27B in bf16 needs ~55 GB (two L40S via device_map="auto"); 4-bit NF4 fits one.
+# Whatever precision the teacher uses, evaluate the Gemma reference row the same way.
+TEACHER_4BIT = _env_bool("TEACHER_4BIT", False)
 
 # Algorithm 1 line-2 blind rollout.
 BLIND_MODEL = _env_str("BLIND_MODEL", TEACHER_MODEL)
@@ -145,9 +151,11 @@ PAPER_STUDENT_MODEL = STUDENT_MODEL
 # Table 1 frontier references use the pretrained base, not -Instruct.
 FRONTIER_STUDENT_MODELS = {
     "gemma_27b": "google/gemma-3-27b-it",
-    "llama_70b": "meta-llama/Llama-3.1-70B",  # 3.3 base not published; Meta only ships 3.3-Instruct
-    "llama_8b": "meta-llama/Llama-3.1-8B",
+    "llama_70b": "meta-llama/Llama-3.3-70B-Instruct",  # paper: Llama 3.3-70B
+    "llama_8b": "meta-llama/Llama-3.1-8B-Instruct",
 }
+# Haiku reference row, queried through LiteLLM (eval --mode litellm).
+LITELLM_HAIKU_MODEL = _env_str("LITELLM_HAIKU_MODEL", "anthropic/claude-haiku-4-5")
 
 LORA_R = 8
 LORA_ALPHA = 16
@@ -189,7 +197,7 @@ def max_train_steps_for_variant(variant: str) -> int | None:
 
 EPISODES_PER_ENV = _env_int("EVAL_EPISODES", 12)
 EVAL_SEED = _env_int("EVAL_SEED", 42)
-EVAL_MAX_TOKENS = _env_int("EVAL_MAX_TOKENS", 192)
+EVAL_MAX_TOKENS = _env_int("EVAL_MAX_TOKENS", 384)  # slots + shortlist EV; 192 truncated [Decision]
 EVAL_VARIANTS = _env_str("EVAL_VARIANTS", "base,core")
 EVAL_GAMES = _env_str("EVAL_GAMES", "all")
 USE_4BIT = _env_bool("USE_4BIT", True)
@@ -249,6 +257,8 @@ PD_VARIANTS = {
     "ipd-stage": PDParams(T=5, R=3, P=1, S=0, horizon=1),
 }
 
+# Single source of truth for prompts, rewards and the training solver.
+# Paper Appendix G: (Stag,Stag)=4, (S,H)=0, (H,S)=3, (H,H)=1.
 STAG_PAYOFFS = {(0, 0): 4, (0, 1): 0, (1, 0): 3, (1, 1): 1}  # 0=Stag, 1=Hare
 
 BOS_PAYOFFS = {
@@ -266,10 +276,70 @@ MP_PAYOFFS = {
 }
 
 OPPONENT_AXIS = {
-    "stationary": ["always_cooperate", "always_defect"],
-    "stochastic": ["random", "epsilon_greedy"],
+    "stationary": [
+        "always_cooperate", "always_defect",
+        "truthful_bidder", "shaded_bidder_low", "shaded_bidder_high",
+        "greedy_bargainer", "equal_split_bargainer", "nash_bargainer",
+        "fair_splitter", "greedy_splitter", "level1_guesser",
+    ],
+    "stochastic": [
+        "random", "epsilon_greedy", "random_uniform_bidder", "random_bargainer",
+    ],
     "strategic": ["tit_for_tat", "grim_trigger", "pavlov", "tit_for_two_tats", "generous_tft"],
 }
+
+# Evaluation opponent pools, paper Appendix I. Weights apply to weighted
+# sampling; "round_robin" pools first draw every member once (shuffled) and
+# then sample by weight, so n=12 episodes always cover the whole pool.
+MATRIX_POOL = {
+    "tit_for_tat": 2.0, "grim_trigger": 2.0, "tit_for_two_tats": 1.5,
+    "generous_tft": 1.5, "pavlov": 1.5, "always_cooperate": 1.0,
+    "always_defect": 1.0, "random": 1.0, "epsilon_greedy": 1.0,
+}
+AUCTION_POOL = {
+    "truthful_bidder": 1.0, "shaded_bidder_low": 1.0,
+    "shaded_bidder_high": 1.0, "random_uniform_bidder": 1.0,
+}
+BARGAINING_POOL = {
+    "greedy_bargainer": 1.0, "equal_split_bargainer": 1.0,
+    "nash_bargainer": 1.0, "random_bargainer": 1.0,
+}
+# NOT specified in the paper (Appendix I lists only matrix, auction and
+# bargaining pools). Whatever is used here must be added to Appendix I.
+DIVIDE_DOLLAR_POOL = {"fair_splitter": 1.0, "greedy_splitter": 1.0, "random": 1.0}
+P_BEAUTY_POOL = {"level1_guesser": 1.0, "random": 1.0}
+TTT_POOL = {"random": 1.0}
+EVAL_OPPONENT_POOLS = {
+    "pd-classic": ("weighted", MATRIX_POOL),
+    "pd-tight": ("weighted", MATRIX_POOL),
+    "pd-high-temptation": ("weighted", MATRIX_POOL),
+    "stag-hunt": ("weighted", MATRIX_POOL),
+    "bos": ("round_robin", MATRIX_POOL),
+    "matching-pennies": ("round_robin", MATRIX_POOL),
+    "ipd-stage": ("round_robin", MATRIX_POOL),
+    "tic-tac-toe": ("round_robin", TTT_POOL),
+    "auction": ("round_robin", AUCTION_POOL),
+    "negotiation": ("round_robin", BARGAINING_POOL),
+    "divide-dollar": ("round_robin", DIVIDE_DOLLAR_POOL),
+    "p-beauty": ("round_robin", P_BEAUTY_POOL),
+}
+# Opponent's private weights in bargaining (paper does not specify; symmetric).
+BARGAIN_CAPACITY = 4
+BARGAIN_OPP_WEIGHTS = (3, 4, 3)
+
+# TFT-CR (Table 1, Figure 1 right): a dedicated split, n episodes per repeated
+# game against tit-for-tat only, reported as the mean cumulative reward.
+TFT_GAMES = ("pd-classic", "pd-tight", "pd-high-temptation", "stag-hunt")
+
+# Decoding for every evaluated model. Greedy decoding against deterministic
+# opponents makes all n episodes of a (game, opponent) cell identical, so the
+# paper's n=12 is only meaningful with sampling. Seeds are per episode.
+EVAL_DO_SAMPLE = _env_bool("EVAL_DO_SAMPLE", True)
+EVAL_TEMPERATURE = _env_float("EVAL_TEMPERATURE", 0.7)
+EVAL_TOP_P = _env_float("EVAL_TOP_P", 1.0)
+# All models get the same output contract; slots elicit the [EV] the coupling
+# metric parses. Training pairs are rendered with the same formatter.
+EVAL_REASONING_FORMAT = _env_str("EVAL_REASONING_FORMAT", "slots")
 
 # Table 1 reference rows used by --compare-reference.
 PAPER_TABLE1 = {
@@ -338,6 +408,11 @@ LR_SCHEDULER = _env_str("LR_SCHEDULER", "cosine")
 LOGGING_STEPS = _env_int("LOGGING_STEPS", 10)
 SAVE_STEPS = _env_int("SAVE_STEPS", 10)
 PAPER_SAVE_TOTAL_LIMIT = _env_int("SAVE_TOTAL_LIMIT", 10)  # keep the last 10 checkpoints
+# Paper §2.3 / App. F: "selecting checkpoints by held-out DPO loss". A fraction
+# of distinct decision contexts (prompts) is held out; every copy of a context
+# (RW upsampling, repeated positions) lands on the same side of the split.
+DPO_EVAL_FRACTION = _env_float("DPO_EVAL_FRACTION", 0.1)
+DPO_EVAL_SEED = _env_int("DPO_EVAL_SEED", 42)
 
 TABLE1_VARIANTS = [
     "base", "filter_on", "filter_off", "core", "aux", "all", "rw", "merge",

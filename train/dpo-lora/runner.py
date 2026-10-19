@@ -16,7 +16,8 @@ import config
 from history.paths import ensure_session, lora_variant_dir
 from lifecycle import (build_config_snapshot, finalize_run_manifest, find_resume_for_publish, infer_variant, persist_run_manifest, publish_adapter, resolve_checkpoint_path, resolve_run_dirs, write_latest_pointer)
 from args import parse_train_args
-from data import build_dpo_trainer, extract_train_metrics, prepare_model, prepare_pairs
+from data import (build_dpo_trainer, extract_train_metrics, format_pair_prompts, prepare_model,
+                  prepare_pairs, split_pairs_by_context)
 from utils import build_lora_config
 
 
@@ -59,6 +60,11 @@ def run_training(argv: list[str] | None = None) -> None:
     target_modules = lora_target if lora_target == "all-linear" else lora_target.split(",")
     lora_config = build_lora_config(r=args.lora_r, alpha=args.lora_alpha, target_modules=target_modules)
     model, tokenizer = prepare_model(STUDENT_MODEL=student_model, lora_config=lora_config, resume_checkpoint=resume_ckpt)
+    train_ds, eval_ds = split_pairs_by_context(dataset, config.DPO_EVAL_FRACTION, config.DPO_EVAL_SEED)
+    train_ds = format_pair_prompts(train_ds, tokenizer)
+    eval_ds = format_pair_prompts(eval_ds, tokenizer) if eval_ds is not None else None
+    print(f"DPO split by context: train={len(train_ds)} eval={len(eval_ds) if eval_ds is not None else 0} "
+          f"(fraction={config.DPO_EVAL_FRACTION}, seed={config.DPO_EVAL_SEED})", flush=True)
     snapshot = build_config_snapshot(
         variant=infer_variant(publish_dir), pairs_path=pairs_path, pairs_count=len(dataset),
         STUDENT_MODEL=student_model, paper=True, epochs=args.epochs, lr=args.lr,
@@ -73,11 +79,14 @@ def run_training(argv: list[str] | None = None) -> None:
     use_tensorboard = not args.no_tensorboard
     save_total_limit = args.save_total_limit if args.save_total_limit is not None else config.PAPER_SAVE_TOTAL_LIMIT
     print(f"DPO train model={student_model} pairs={len(dataset)} epochs={args.epochs} max_steps={args.max_steps} max_length={args.max_length} grad_accum={args.grad_accum} run_dir={run_dir} publish={publish_dir} tensorboard={use_tensorboard} save_total_limit={save_total_limit} resume={resume_ckpt}", flush=True)
-    trainer = build_dpo_trainer(model=model, tokenizer=tokenizer, dataset=dataset, args=args, adapter_dir=adapter_dir, tensorboard_dir=run_dir / "tensorboard", use_tensorboard=use_tensorboard, save_total_limit=save_total_limit)
+    trainer = build_dpo_trainer(model=model, tokenizer=tokenizer, dataset=train_ds, eval_dataset=eval_ds, args=args, adapter_dir=adapter_dir, tensorboard_dir=run_dir / "tensorboard", use_tensorboard=use_tensorboard, save_total_limit=save_total_limit)
     try:
         trainer.train(resume_from_checkpoint=str(resume_ckpt) if resume_ckpt else None)
+        # With load_best_model_at_end the model now holds the lowest-eval-loss checkpoint.
         trainer.save_model(str(adapter_dir))
         metrics = extract_train_metrics(trainer)
+        metrics["best_checkpoint"] = trainer.state.best_model_checkpoint
+        metrics["best_eval_loss"] = trainer.state.best_metric
     except Exception:
         finalize_run_manifest(run_dir, status="failed")
         raise

@@ -75,6 +75,11 @@ from eval.table.run_title import build_run_title, infer_train_epochs
 from eval.table.run_table import eval_variant, fmt, fmt_cell, save_json
 
 
+
+def _nan(x):
+    """Console printing: unparsable coupling is None, print it as nan."""
+    return float("nan") if x is None else x
+
 def _discover_variants(ckpt_root: Path) -> list[str]:
     from eval.rollout.checkpoints import discover_all_adapters
 
@@ -177,7 +182,7 @@ def _format_table1_local(rows: dict[str, dict]) -> list[str]:
     for variant, m in rows.items():
         label = VARIANT_LABELS.get(variant, variant)
         lines.append(
-            f"{label:<32} {m['fc_id']:>8.2f} {m['fc_ho']:>8.2f} "
+            f"{label:<32} {_nan(m['fc_id']):>8.2f} {_nan(m['fc_ho']):>8.2f} "
             f"{fmt(m['cr_id']):>10} {fmt(m['cr_ho']):>10}"
         )
     return lines
@@ -193,7 +198,7 @@ def _format_table1_paper(paper: dict) -> list[str]:
             continue
         label = VARIANT_LABELS.get(variant, variant)
         lines.append(
-            f"{label:<32} {r['fc_id']:>8.2f} {r['fc_ho']:>8.2f} "
+            f"{label:<32} {_nan(r['fc_id']):>8.2f} {_nan(r['fc_ho']):>8.2f} "
             f"{fmt(r['cr_id']):>10} {fmt(r['cr_ho']):>10}"
         )
     return lines

@@ -3,6 +3,55 @@
 Run all commands from the repository root. These instructions assume a single
 node with at least three visible GPUs. Complete each stage before starting the next.
 
+## Teacher: Gemma 3-27B
+
+`TEACHER_MODEL` (default `google/gemma-3-27b-it`) is both the blind-rollout
+policy (Algorithm 1, line 1) and the no-leak paraphraser (§2.2). Gemma 3-27B is
+also a Table 1 frontier reference, so the teacher's own failure against
+tit-for-tat is measured by the same evaluation that scores the student.
+
+* Accept the Gemma license on Hugging Face and put `HF_TOKEN` in `.env`.
+* bf16 needs ~55 GB. On 80 GB GPUs (A100-80G / H100) the existing
+  one-worker-per-GPU sharding works unchanged. On 48 GB GPUs (L40S) set
+  `TEACHER_4BIT=1`, and evaluate the Gemma reference row with
+  `--reference-4bit` so teacher and reference use the same precision.
+* The result files committed under `data/*/result/` were produced with the
+  previous Qwen 2.5-7B teacher and the previous stag-hunt prompt
+  ((Hare,Hare) shown as 2, rewarded as 1). Regenerate all stages; do not mix
+  them with Gemma data.
+
+## Evaluation (paper §3.1, Tables 1-3, Figure 1)
+
+```bash
+export RUN_ID=paper
+# student: base + every trained adapter in runs/$RUN_ID/lora
+./eval/rollout/rollout.sh --episodes 12
+# frontier reference rows (same prompts, contract, opponents, seeds)
+./eval/rollout/rollout.sh --mode hf --model-id google/gemma-3-27b-it --name gemma_27b
+./eval/rollout/rollout.sh --mode hf --model-id meta-llama/Llama-3.3-70B-Instruct --name llama_70b
+./eval/rollout/rollout.sh --mode litellm --model-id anthropic/claude-haiku-4-5 --name haiku  # pip install litellm
+./eval/metric/metrics.sh && ./eval/table/tables.sh   # -> runs/$RUN_ID/eval/tables/paper_tables.md
+python -m unittest eval.test_paper_eval -v            # CPU-only checks, no GPU needed
+```
+
+* **Main split**: 12 games × n episodes. Opponents follow Appendix I pools
+  (`config.EVAL_OPPONENT_POOLS`); the schedule depends only on (game, n, seed),
+  so every model faces the same opponents.
+* **TFT split**: n episodes per repeated game (`config.TFT_GAMES`) against
+  tit-for-tat only. `TFT-CR` is the mean over this split, never over the main
+  split episodes that happened to draw TFT.
+* **Decoding**: sampled (`EVAL_TEMPERATURE=0.7`) with per-round seeds. Greedy
+  decoding against deterministic opponents makes the n episodes of a cell
+  identical copies, so n=12 would not be 12 samples.
+* **Parse failures** are recorded per round (`parsed_ok`) and reported next to
+  CR; an unparsable output is still played as the default legal action.
+* **Checkpoint selection**: 10% of distinct decision contexts are held out
+  (`DPO_EVAL_FRACTION`), every RW copy of a context stays on one side, and the
+  lowest held-out DPO loss checkpoint is kept (`load_best_model_at_end`).
+* **Train/eval inputs are identical**: DPO prompts are rendered with the same
+  chat template + output contract the evaluator uses
+  (`eval.rollout.agents.format_training_prompt`).
+
 ## 1. Blind rollout
 
 ```bash

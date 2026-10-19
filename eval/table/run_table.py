@@ -23,6 +23,11 @@ import importlib.util as _ilu  # train/dpo-lora is a hyphenated (non-importable)
 _DPO_LORA_DIR = ROOT / "train" / "dpo-lora"
 
 
+
+def _nan(x):
+    """Console printing: unparsable coupling is None, print it as nan."""
+    return float("nan") if x is None else x
+
 def _load_dpolora(module_name: str):
     """Load a module from train/dpo-lora by file path (hyphen -> no plain import)."""
     spec = _ilu.spec_from_file_location(f"_dpolora_{module_name}", _DPO_LORA_DIR / f"{module_name}.py")
@@ -219,7 +224,7 @@ def run_table1(args) -> None:
         for v in TABLE1_VARIANTS + ["haiku"]:
             r = PAPER_TABLE1[v]
             print(
-                f"{VARIANT_LABELS.get(v, v):<32} {r['fc_id']:>8.2f} {r['fc_ho']:>8.2f} "
+                f"{VARIANT_LABELS.get(v, v):<32} {_nan(r['fc_id']):>8.2f} {_nan(r['fc_ho']):>8.2f} "
                 f"{fmt(r['cr_id']):>10} {fmt(r['cr_ho']):>10}"
             )
         return

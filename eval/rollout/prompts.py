@@ -15,6 +15,24 @@ def _pd_lines(game: str) -> list[str]:
     ]
 
 
+def _stag_table() -> dict[tuple[int, int], tuple[float, float]]:
+    """STAG_PAYOFFS stores the row player's payoff; the game is symmetric."""
+    return {(i, j): (STAG_PAYOFFS[(i, j)], STAG_PAYOFFS[(j, i)]) for i in range(2) for j in range(2)}
+
+
+def _num(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def _matrix_lines(actions: tuple[str, str], table: dict) -> list[str]:
+    """Payoff lines rendered from the same config table the reward uses."""
+    return [
+        f"  If you play {actions[i]} and opp plays {actions[j]}: "
+        f"({_num(table[(i, j)][0])}, {_num(table[(i, j)][1])})"
+        for i in range(2) for j in range(2)
+    ]
+
+
 def _format_history(history: list[dict]) -> str:
     if not history:
         return "(none yet — first round)."
@@ -46,10 +64,7 @@ def stag_hunt_prompt(*, round_idx: int, horizon: int, history: list[dict]) -> st
         f"Game: stag_hunt repeated for {horizon} rounds.",
         "You are p0. Opponents: ['p1'].",
         "Stage-game payoff table (your payoff, opponent payoff):",
-        "  If you play Stag and opp plays Stag: (4, 4)",
-        "  If you play Stag and opp plays Hare: (0, 3)",
-        "  If you play Hare and opp plays Stag: (3, 0)",
-        "  If you play Hare and opp plays Hare: (2, 2)",
+        *_matrix_lines(("Stag", "Hare"), _stag_table()),
         f"History: {_format_history(history)}",
         "Your legal actions: ['Stag', 'Hare']",
         "Choose one action. Remember the game continues.",
@@ -64,10 +79,7 @@ def bos_prompt() -> str:
         "Game: battle_of_sexes (one-shot simultaneous-move, 2 players).\n"
         "You are p0. Your opponent is p1.\n"
         "Payoff table (your payoff, opponent payoff):\n"
-        "  If you play Opera and opp plays Opera: (2, 1)\n"
-        "  If you play Opera and opp plays Football: (0, 0)\n"
-        "  If you play Football and opp plays Opera: (0, 0)\n"
-        "  If you play Football and opp plays Football: (1, 2)\n"
+        + "\n".join(_matrix_lines(("Opera", "Football"), BOS_PAYOFFS)) + "\n"
         "Your legal actions: ['Opera', 'Football']\n"
         "Choose one action from the list above."
     )
@@ -78,10 +90,7 @@ def matching_pennies_prompt() -> str:
         "Game: matching_pennies (one-shot simultaneous-move, 2 players).\n"
         "You are p0. Your opponent is p1.\n"
         "Payoff table (your payoff, opponent payoff):\n"
-        "  If you play H and opp plays H: (1, -1)\n"
-        "  If you play H and opp plays T: (-1, 1)\n"
-        "  If you play T and opp plays H: (-1, 1)\n"
-        "  If you play T and opp plays T: (1, -1)\n"
+        + "\n".join(_matrix_lines(("H", "T"), MP_PAYOFFS)) + "\n"
         "Your legal actions: ['H', 'T']\n"
         "Choose one action from the list above."
     )
@@ -149,7 +158,8 @@ def p_beauty_prompt() -> str:
     return (
         "Game: p-beauty contest (one-shot).\n"
         "Choose an integer guess in [0, 100].\n"
-        "Payoff is higher when your guess is closer to 2/3 of the average guess.\n"
+        "Two players guess. Whoever is closer to 2/3 of the average of both guesses\n"
+        "wins payoff 1, the other gets 0; an exact tie gives each 0.5.\n"
         "Respond with <action>guess</action>."
     )
 
@@ -183,8 +193,8 @@ def pd_payoff(game: str, a0: str, a1: str) -> tuple[float, float]:
 
 def stag_payoff(a0: str, a1: str) -> tuple[float, float]:
     idx = {"Stag": 0, "Hare": 1}
-    v = STAG_PAYOFFS[(idx[a0], idx[a1])]
-    return float(v), float(STAG_PAYOFFS[(idx[a1], idx[a0])])
+    u0, u1 = _stag_table()[(idx[a0], idx[a1])]
+    return float(u0), float(u1)
 
 
 def bos_payoff(a0: str, a1: str) -> tuple[float, float]:

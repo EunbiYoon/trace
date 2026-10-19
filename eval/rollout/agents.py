@@ -8,10 +8,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-import torch
-from transformers import GenerationConfig
-
+import config
 from config import OLLAMA_BASE_URL
+
+# torch/transformers are imported lazily so the game engine, opponents and
+# metrics can be imported (and unit-tested) without a GPU stack.
 
 
 class HeuristicAgent:
@@ -49,9 +50,10 @@ class LoRALLMAgent:
     """Qwen + LoRA agent; output format matches DPO training data."""
 
     def __init__(
-        self, model, tokenizer, max_new_tokens: int = 192, *,
-        strict_output: bool = False, do_sample: bool = False,
-        temperature: float = 0.7, reasoning_format: str = "concise",
+        self, model, tokenizer, max_new_tokens: int = config.EVAL_MAX_TOKENS, *,
+        strict_output: bool = False, do_sample: bool = config.EVAL_DO_SAMPLE,
+        temperature: float = config.EVAL_TEMPERATURE, top_p: float = config.EVAL_TOP_P,
+        reasoning_format: str = config.EVAL_REASONING_FORMAT,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -59,25 +61,35 @@ class LoRALLMAgent:
         self.strict_output = strict_output
         self.do_sample = do_sample
         self.temperature = temperature
+        self.top_p = top_p
         if reasoning_format not in _REASONING_FORMATS:
             raise ValueError(f"reasoning_format must be one of {sorted(_REASONING_FORMATS)}")
         self.reasoning_format = reasoning_format
+        self.last_meta: dict[str, Any] = {}
 
     def _generate(self, obs: dict[str, Any]) -> str:
         n_legal = len(obs.get("legal_actions") or [])
         text = _format_llm_prompt(self.tokenizer, obs["prompt"], self.reasoning_format,
                                   n_legal=n_legal)
-        inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
+        import torch
+        from transformers import GenerationConfig
+
+        # The chat template already inserts BOS; tokenizing with special tokens
+        # again would double it (Gemma 3 degrades noticeably with two BOS).
+        inputs = self.tokenizer(text, return_tensors="pt", add_special_tokens=False).to(self.model.device)
         pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
         gen_cfg = GenerationConfig(
             max_new_tokens=self.max_new_tokens,
             do_sample=self.do_sample,
             temperature=self.temperature if self.do_sample else None,
+            top_p=self.top_p if self.do_sample else None,
             pad_token_id=pad_id,
-            eos_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=stop_token_ids(self.model, self.tokenizer),
         )
+        if self.do_sample and obs.get("seed") is not None:
+            torch.manual_seed(int(obs["seed"]))
         self.model.eval()
-        # Kwarg do_sample=False overrides model.generation_config (Llama base defaults to sample).
+        # Kwarg do_sample overrides model.generation_config (Llama base defaults to sample).
         with torch.inference_mode():
             out = self.model.generate(**inputs, generation_config=gen_cfg, do_sample=self.do_sample)
         new_tokens = out[0, inputs["input_ids"].shape[1] :]
@@ -104,8 +116,8 @@ class LoRALLMAgent:
                 if attempt + 1 < attempts:
                     continue
                 raise RuntimeError("model.generate() produced an empty blind-rollout response")
-            reasoning, action = _parse_response(response, obs)
-            if not self.strict_output or (reasoning and action is not None):
+            reasoning, action, parsed_ok = parse_response(response, obs)
+            if not self.strict_output or (reasoning and parsed_ok):
                 break
         else:
             raise RuntimeError(
@@ -116,6 +128,8 @@ class LoRALLMAgent:
         if action is None:
             action = _fallback_action(obs)
             reasoning = reasoning or f"fallback: {action}"
+            parsed_ok = False
+        self.last_meta = {"parsed_ok": parsed_ok, "raw_response": last_response}
         return reasoning, action
 
 
@@ -127,11 +141,12 @@ class OllamaAgent:
         model: str,
         *,
         base_url: str = OLLAMA_BASE_URL,
-        max_new_tokens: int = 192,
+        max_new_tokens: int = config.EVAL_MAX_TOKENS,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.max_new_tokens = max_new_tokens
+        self.last_meta: dict[str, Any] = {}
 
     def decide(self, obs: dict[str, Any]) -> tuple[str, Any]:
         prompt = obs["prompt"]
@@ -161,10 +176,59 @@ class OllamaAgent:
             ) from exc
 
         response = body.get("message", {}).get("content", "") or ""
-        reasoning, action = _parse_response(response, obs)
+        reasoning, action, parsed_ok = parse_response(response, obs)
         if action is None:
             action = _fallback_action(obs)
             reasoning = reasoning or f"fallback: {action}"
+            parsed_ok = False
+        self.last_meta = {"parsed_ok": parsed_ok, "raw_response": response}
+        return reasoning, action
+
+
+class LiteLLMAgent:
+    """API frontier reference (Haiku 4.5 row) via LiteLLM.
+
+    Uses the exact prompt and output contract the local models get, so the
+    reference rows are comparable. Requires ``pip install litellm`` and the
+    provider key (e.g. ANTHROPIC_API_KEY) in the environment.
+    """
+
+    def __init__(
+        self, model: str = config.LITELLM_HAIKU_MODEL, *,
+        max_new_tokens: int = config.EVAL_MAX_TOKENS,
+        temperature: float = config.EVAL_TEMPERATURE,
+        do_sample: bool = config.EVAL_DO_SAMPLE,
+        reasoning_format: str = config.EVAL_REASONING_FORMAT,
+        max_retries: int = 5,
+    ) -> None:
+        import litellm  # noqa: F401  (fail fast if missing)
+
+        self.model = model
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature if do_sample else 0.0
+        self.reasoning_format = reasoning_format
+        self.max_retries = max_retries
+        self.last_meta: dict[str, Any] = {}
+
+    def decide(self, obs: dict[str, Any]) -> tuple[str, Any]:
+        import litellm
+
+        n_legal = len(obs.get("legal_actions") or [])
+        content = obs["prompt"] + output_contract(self.reasoning_format, n_legal)
+        response = litellm.completion(
+            model=self.model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+            num_retries=self.max_retries,
+        )
+        text = response.choices[0].message.content or ""
+        reasoning, action, parsed_ok = parse_response(text, obs)
+        if action is None:
+            action = _fallback_action(obs)
+            reasoning = reasoning or f"fallback: {action}"
+            parsed_ok = False
+        self.last_meta = {"parsed_ok": parsed_ok, "raw_response": text}
         return reasoning, action
 
 
@@ -219,24 +283,92 @@ def _slots_contract(n_legal: int | None) -> str:
     return _SLOTS_CONTRACT_HEAD + ev + _SLOTS_CONTRACT_TAIL
 
 
+def output_contract(reasoning_format: str, n_legal: int | None) -> str:
+    return _slots_contract(n_legal) if reasoning_format == "slots" else _CONCISE_CONTRACT
+
+
 def _format_llm_prompt(tokenizer, prompt: str, reasoning_format: str = "concise",
                        *, n_legal: int | None = None) -> str:
-    """Use chat template when present (Instruct); else raw prompt (pretrained base)."""
-    output_contract = (
-        _slots_contract(n_legal) if reasoning_format == "slots" else _CONCISE_CONTRACT
-    )
-    messages = [{"role": "user", "content": prompt + output_contract}]
+    """Use chat template when present (Instruct); else raw prompt (pretrained base).
+
+    This is the ONLY place a game prompt becomes model input. DPO pairs are
+    rendered through ``format_training_prompt`` -> here, so training and
+    evaluation see byte-identical inputs.
+    """
+    contract = output_contract(reasoning_format, n_legal)
+    messages = [{"role": "user", "content": prompt + contract}]
     if getattr(tokenizer, "chat_template", None):
         return tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-    return prompt + output_contract + "\n"
+    return prompt + contract + "\n"
+
+
+def legal_count_from_prompt(prompt: str) -> int | None:
+    """Recover |legal actions| from a stored game prompt (for the EV shortlist)."""
+    m = re.search(r"Your legal actions: \[(.*?)\]", prompt)
+    if m:
+        return len([x for x in m.group(1).split(",") if x.strip()])
+    m = re.search(r"Legal moves: \[(.*?)\]", prompt)
+    if m:
+        return len([x for x in m.group(1).split(",") if x.strip()])
+    if "Legal proposals (" in prompt:
+        m = re.search(r"Legal proposals \((\d+) total\)", prompt)
+        return int(m.group(1)) if m else 125
+    if "integer bid in [0, 200]" in prompt:
+        return 201
+    if "share as a float" in prompt:
+        return 101
+    if "integer guess in [0, 100]" in prompt:
+        return 101
+    return None
+
+
+def format_training_prompt(tokenizer, prompt: str,
+                           reasoning_format: str = config.EVAL_REASONING_FORMAT) -> str:
+    """Render a stored DPO-pair prompt exactly as eval renders a live prompt."""
+    return _format_llm_prompt(tokenizer, prompt, reasoning_format,
+                              n_legal=legal_count_from_prompt(prompt))
+
+
+def stop_token_ids(model, tokenizer) -> list[int] | int:
+    """EOS ids that end an assistant turn.
+
+    ``tokenizer.eos_token_id`` alone is wrong for Gemma 3 (``<eos>``) whose
+    turns end with ``<end_of_turn>``; overriding the generation config with it
+    makes Gemma run on into fabricated user turns until max_new_tokens.
+    """
+    ids: list[int] = []
+    gen = getattr(model, "generation_config", None)
+    for value in (getattr(gen, "eos_token_id", None), tokenizer.eos_token_id):
+        if value is None:
+            continue
+        ids.extend(value if isinstance(value, (list, tuple)) else [value])
+    for token in ("<end_of_turn>", "<|im_end|>", "<|eot_id|>"):
+        tid = tokenizer.convert_tokens_to_ids(token) if hasattr(tokenizer, "convert_tokens_to_ids") else None
+        unk = getattr(tokenizer, "unk_token_id", None)
+        if isinstance(tid, int) and tid >= 0 and tid != unk:
+            ids.append(tid)
+    ids = list(dict.fromkeys(ids))
+    return ids[0] if len(ids) == 1 else ids
 
 
 _REASONING_TAGS = r"think|p|reasoning|thinking|thought|analysis"
 
 
 def _parse_response(text: str, obs: dict[str, Any]) -> tuple[str, Any]:
+    thinking, action, _ = parse_response(text, obs)
+    return thinking, action
+
+
+def parse_response(text: str, obs: dict[str, Any]) -> tuple[str, Any, bool]:
+    """Return (reasoning, action, parsed_ok).
+
+    ``parsed_ok`` is True only when an ``<action>`` tag resolves unambiguously
+    to a legal action. Every other path (missing tag, last-line guess, numeric
+    default, ambiguous substring) still returns an action so the episode can
+    continue, but is reported as a parse failure.
+    """
     thinking = ""
     m_think = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
     if m_think:
@@ -256,59 +388,66 @@ def _parse_response(text: str, obs: dict[str, Any]) -> tuple[str, Any]:
             pre = text.split("<action>", 1)[0]
             thinking = re.sub(r"^\s*<[a-z]+>|</[a-z]+>\s*$", "", pre.strip(), flags=re.I).strip()
 
+    tagged = True
     action_raw = None
-    m_act = re.search(r"<action>(.*?)</action>", text, re.DOTALL)
+    m_act = re.findall(r"<action>(.*?)</action>", text, re.DOTALL)
     if m_act:
-        action_raw = m_act.group(1).strip()
+        action_raw = m_act[-1].strip()
     else:
+        tagged = False
         for line in reversed(text.strip().splitlines()):
             line = line.strip()
             if line and not line.startswith("<"):
                 action_raw = line
                 break
 
-    action = _coerce_action(action_raw, obs) if action_raw else None
-    return thinking, action
+    if not action_raw:
+        return thinking, None, False
+    action, exact = _coerce_action(action_raw, obs)
+    return thinking, action, bool(tagged and exact)
 
 
-def _coerce_action(raw: str, obs: dict[str, Any]) -> Any:
+def _coerce_action(raw: str, obs: dict[str, Any]) -> tuple[Any, bool]:
+    """Map raw action text to a legal action; the flag says whether it was exact."""
     legal = obs.get("legal_actions") or []
     game = obs.get("game", "")
     raw = raw.strip()
 
     if game == "negotiation":
-        nums = [int(x) for x in re.findall(r"-?\d+", raw)][:3]
-        if len(nums) == 3:
-            return tuple(nums)
-        return (1, 1, 1)
+        nums = [int(x) for x in re.findall(r"-?\d+", raw)]
+        cap = config.BARGAIN_CAPACITY
+        if len(nums) == 3 and all(0 <= n <= cap for n in nums):
+            return tuple(nums), True
+        return (1, 1, 1), False
 
     if game == "tic-tac-toe":
         nums = re.findall(r"\d+", raw)
-        if nums:
-            val = int(nums[0])
-            if val in legal:
-                return val
-        return legal[0] if legal else 0
+        if len(nums) == 1 and int(nums[0]) in legal:
+            return int(nums[0]), True
+        return (legal[0] if legal else 0), False
 
-    if game == "auction":
-        nums = re.findall(r"\d+", raw)
-        return int(nums[0]) if nums else obs.get("private_value", 100)
+    if game in ("auction", "p-beauty"):
+        nums = re.findall(r"-?\d+(?:\.\d+)?", raw)
+        if len(nums) == 1 and float(nums[0]).is_integer() and int(float(nums[0])) in legal:
+            return int(float(nums[0])), True
+        fallback = obs.get("private_value", 100) if game == "auction" else 33
+        return fallback, False
 
     if game == "divide-dollar":
         nums = re.findall(r"\d*\.?\d+", raw)
-        return float(nums[0]) if nums else 0.5
-
-    if game == "p-beauty":
-        nums = re.findall(r"\d+", raw)
-        return int(nums[0]) if nums else 33
+        if len(nums) == 1:
+            share = round(float(nums[0]), 2)
+            if share in legal:
+                return share, True
+        return 0.5, False
 
     for candidate in legal:
         if str(candidate).lower() == raw.lower():
-            return candidate
-    for candidate in legal:
-        if str(candidate).lower() in raw.lower():
-            return candidate
-    return legal[0] if legal else raw
+            return candidate, True
+    hits = [c for c in legal if re.search(rf"\b{re.escape(str(c))}\b", raw, re.I)]
+    if len(hits) == 1:
+        return hits[0], True
+    return (legal[0] if legal else raw), False
 
 
 def _fallback_action(obs: dict[str, Any]) -> Any:

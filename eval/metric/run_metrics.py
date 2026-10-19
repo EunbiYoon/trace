@@ -30,7 +30,7 @@ def _run_id(explicit: str | None) -> str | None:
 
 def _load_rollout(path: Path) -> list[EpisodeResult]:
     episodes: list[EpisodeResult] = []
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, str, int]] = set()
     with path.open(encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             if not line.strip():
@@ -39,16 +39,18 @@ def _load_rollout(path: Path) -> list[EpisodeResult]:
                 row: dict[str, Any] = json.loads(line)
                 if row.get("status", "completed") != "completed":
                     continue
-                key = (str(row["game"]), int(row["episode"]))
+                split = str(row.get("split", "main"))  # schema v1 rows have no split
+                key = (split, str(row["game"]), int(row["episode"]))
                 if key in seen:
                     continue
                 seen.add(key)
                 episodes.append(
                     EpisodeResult(
-                        game=key[0],
+                        game=key[1],
                         opponent=str(row["opponent"]),
                         cumulative_reward=float(row["cumulative_reward"]),
                         rounds=[RoundResult(**round_row) for round_row in row.get("rounds", [])],
+                        split=split,
                     )
                 )
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

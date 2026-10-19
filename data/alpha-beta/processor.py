@@ -73,7 +73,12 @@ def counterfactual_mode() -> str:
 
 
 def teacher_model() -> str:
-    return env("A1_TEACHER_MODEL", env("TEACHER_MODEL", "Qwen/Qwen2.5-7B-Instruct"))
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    import config
+
+    return env("A1_TEACHER_MODEL", env("TEACHER_MODEL", config.TEACHER_MODEL))
 
 
 def _dedup_for(variant: str) -> str:

@@ -86,7 +86,7 @@ conda activate sal
 if [[ -f .env ]]; then set -a; source .env; set +a; fi
 
 E="${BLIND_EPISODES_PER_COMBINATION:-12}"
-MODEL="${BLIND_MODEL:-${TEACHER_MODEL:-Qwen/Qwen2.5-7B-Instruct}}"
+MODEL="${BLIND_MODEL:-${TEACHER_MODEL:-google/gemma-3-27b-it}}"
 _DEF_TOK=384; [[ "$RFMT" == slots ]] && _DEF_TOK=512   # slot form needs more room
 MAX_NEW_TOKENS="${BLIND_MAX_NEW_TOKENS:-$_DEF_TOK}"
 TEMPERATURE="${BLIND_TEMPERATURE:-0.7}"

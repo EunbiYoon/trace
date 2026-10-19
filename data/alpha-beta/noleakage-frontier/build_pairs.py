@@ -115,7 +115,7 @@ def _existing_paraphraser(row: dict[str, Any]) -> Callable[..., str]:
 def teacher_paraphraser(
     STUDENT_MODEL: str, *, max_new_tokens: int = 1024, use_4bit: bool = False
 ) -> Callable[..., str]:
-    """Load the local 7B teacher once and return a deterministic generator.
+    """Load the local teacher (default Gemma 3-27B) once; return a deterministic generator.
 
     ``use_4bit`` defaults to False: the teacher is inference-only, a bf16 7B fits
     comfortably, and bf16 greedy decoding is several times faster than a 4-bit
@@ -125,13 +125,12 @@ def teacher_paraphraser(
     """
     import torch
 
-    load_base_model = _dpolora("utils").load_base_model
+    import config
+    from eval.rollout.agents import stop_token_ids
+    from eval.rollout.hf_loading import load_causal_lm
 
-    model, tokenizer = load_base_model(
-        STUDENT_MODEL=STUDENT_MODEL, use_4bit=use_4bit,
-        torch_dtype=None if use_4bit else "bfloat16",
-    )
-    model.eval()
+    model, tokenizer = load_causal_lm(STUDENT_MODEL, use_4bit=use_4bit or config.TEACHER_4BIT)
+    stop_ids = stop_token_ids(model, tokenizer)
 
     def paraphrase(
         *, history_prompt: str, solver_action: Any,
@@ -148,7 +147,7 @@ def teacher_paraphraser(
         text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        inputs = tokenizer(text, return_tensors="pt")
+        inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False)
         device = next(model.parameters()).device
         inputs = {key: value.to(device) for key, value in inputs.items()}
         with torch.inference_mode():
@@ -157,7 +156,7 @@ def teacher_paraphraser(
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
+                eos_token_id=stop_ids,
             )
         generated = output[0, inputs["input_ids"].shape[1]:]
         return tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -829,8 +828,13 @@ def build_dpo_trainer(
     tensorboard_dir: Path,
     use_tensorboard: bool,
     save_total_limit: int,
+    eval_dataset=None,
 ):
-    """Configure the masked DPO trainer for constructed preference pairs."""
+    """Configure the masked DPO trainer for constructed preference pairs.
+
+    With ``eval_dataset`` the trainer evaluates every ``SAVE_STEPS`` and keeps
+    the checkpoint with the lowest held-out DPO loss (paper App. F).
+    """
     import config
     from trl import DPOConfig
 
@@ -847,6 +851,15 @@ def build_dpo_trainer(
     }
     if args.max_steps is not None:
         train_kwargs["max_steps"] = args.max_steps
+    if eval_dataset is not None:
+        train_kwargs.update(
+            eval_strategy="steps",
+            eval_steps=config.SAVE_STEPS,
+            per_device_eval_batch_size=config.PER_DEVICE_BATCH,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
+        )
     dpo_args = DPOConfig(
         **train_kwargs,
         learning_rate=args.lr,
@@ -868,6 +881,7 @@ def build_dpo_trainer(
         ref_model=None,
         args=dpo_args,
         train_dataset=dataset,
+        eval_dataset=eval_dataset,
         processing_class=tokenizer,
         callbacks=[MinimalCheckpointCallback()],
     )

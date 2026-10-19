@@ -35,6 +35,37 @@ extract_train_metrics = frontier.extract_train_metrics
 prepare_model = frontier.prepare_model
 
 
+def format_pair_prompts(dataset, tokenizer):
+    """Render stored game prompts exactly as eval renders live prompts
+    (chat template + output contract), so the student is trained on the
+    inputs it is evaluated on."""
+    sys.path.insert(0, str(config.PROJECT_ROOT))
+    from eval.rollout.agents import format_training_prompt
+
+    return dataset.map(lambda row: {"prompt": format_training_prompt(tokenizer, row["prompt"])})
+
+
+def split_pairs_by_context(dataset, fraction: float, seed: int):
+    """Group-wise train/eval split keyed on the raw game prompt.
+
+    Returns (train, eval_or_None). Splitting rows instead of contexts would put
+    the 4x-upsampled RW copies, and replayed positions, on both sides.
+    """
+    import random
+
+    if fraction <= 0:
+        return dataset, None
+    contexts = sorted(set(dataset["prompt"]))
+    rng = random.Random(seed)
+    rng.shuffle(contexts)
+    n_eval = max(1, round(len(contexts) * fraction))
+    held = set(contexts[:n_eval])
+    is_eval = [p in held for p in dataset["prompt"]]
+    eval_ds = dataset.select([i for i, e in enumerate(is_eval) if e])
+    train_ds = dataset.select([i for i, e in enumerate(is_eval) if not e])
+    return train_ds, eval_ds
+
+
 def prepare_pairs(args, run_dir: Path):
     if args.trajectories is None:
         pairs_path = Path(args.pairs)

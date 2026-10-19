@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import random
 import json
+import zlib
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from config import ALL_GAMES, OPPONENT_AXIS, PD_VARIANTS
+from config import ALL_GAMES, EVAL_OPPONENT_POOLS, OPPONENT_AXIS, PD_VARIANTS
+import config
 from eval.rollout.opponents import make_opponent
 from eval.rollout.prompts import (
     auction_prompt,
@@ -26,6 +28,8 @@ from eval.rollout.prompts import (
     tic_tac_toe_prompt,
 )
 from eval.rollout.progress import EvalLogger, ProgressAgent
+
+TFT_SPLIT = "tft"
 
 ALL_OPPONENTS: list[str] = [
     name for members in OPPONENT_AXIS.values() for name in members
@@ -53,6 +57,10 @@ class RoundResult:
     agent_action: Any
     opponent_action: Any = None
     prompt: str | None = None
+    # False when the model's output had no parsable legal action and the
+    # engine substituted a default; None for agents that do not report it.
+    parsed_ok: bool | None = None
+    raw_response: str | None = None
 
 
 @dataclass
@@ -61,6 +69,7 @@ class EpisodeResult:
     opponent: str
     cumulative_reward: float
     rounds: list[RoundResult] = field(default_factory=list)
+    split: str = "main"  # "main" = Table 1/2/3 pool; "tft" = TFT-CR split
 
     @property
     def final_round(self) -> RoundResult | None:
@@ -96,11 +105,43 @@ class EpisodeResult:
         }
 
 
-def _opponent_for_episode(game: str, episode_idx: int, seed_base: int, n_episodes: int) -> str:
-    if n_episodes == 1:
-        return DEFAULT_OPPONENT.get(game, "random")
-    rng = random.Random(episode_seed(game, episode_idx, seed_base))
-    return rng.choice(ALL_OPPONENTS)
+def opponent_schedule(game: str, n_episodes: int, seed_base: int = 0) -> list[str]:
+    """Opponents for episodes 0..n-1 (paper Appendix I).
+
+    ``weighted``: i.i.d. draws by pool weight. ``round_robin``: the first
+    |pool| episodes cover every member once (shuffled), the rest are weighted.
+    The schedule depends only on (game, n, seed_base), so it is identical for
+    every evaluated model.
+    """
+    if game not in EVAL_OPPONENT_POOLS:
+        return [DEFAULT_OPPONENT.get(game, "random")] * n_episodes
+    mode, pool = EVAL_OPPONENT_POOLS[game]
+    names, weights = list(pool), list(pool.values())
+    rng = random.Random(stable_hash(f"opponents|{game}|{seed_base}"))
+    schedule: list[str] = []
+    if mode == "round_robin":
+        warmup = names[:]
+        rng.shuffle(warmup)
+        schedule.extend(warmup[:n_episodes])
+    while len(schedule) < n_episodes:
+        schedule.append(rng.choices(names, weights=weights, k=1)[0])
+    return schedule
+
+
+def _decide(agent, obs: dict[str, Any], legal: list[Any]) -> tuple[str, Any, bool | None, str | None]:
+    """Query the agent and validate the action against ``legal``.
+
+    Invalid actions are replaced by ``legal[0]`` exactly as before, but the
+    substitution is now recorded as ``parsed_ok=False`` instead of being silent.
+    """
+    reasoning, action = agent.decide(obs)
+    meta = getattr(agent, "last_meta", None) or {}
+    parsed_ok = meta.get("parsed_ok")
+    raw = meta.get("raw_response")
+    if action not in legal:
+        action = legal[0]
+        parsed_ok = False
+    return reasoning, action, parsed_ok, raw
 
 
 def _wrap_agent(agent, opponent: str, logger: EvalLogger | None):
@@ -150,12 +191,10 @@ def _run_ttt(agent, opponent_name: str, rng: random.Random, logger: EvalLogger |
                 "prompt": prompt,
                 "legal_actions": legal,
             }
-            reasoning, action = agent.decide(obs)
-            if action not in legal:
-                action = legal[0]
+            reasoning, action, ok, raw = _decide(agent, {**obs, "seed": rng.randrange(2**31)}, legal)
             board[action] = "X"
             last_agent_action = action
-            rounds.append(RoundResult(reasoning, action, prompt=prompt))
+            rounds.append(RoundResult(reasoning, action, prompt=prompt, parsed_ok=ok, raw_response=raw))
             status = _ttt_terminal(board, "X")
             if status is not None:
                 reward = float(status)
@@ -201,14 +240,12 @@ def _run_repeated_matrix(
             "prompt": prompt,
             "legal_actions": legal,
         }
-        reasoning, action = agent.decide(obs)
-        if action not in legal:
-            action = legal[0]
+        reasoning, action, ok, raw = _decide(agent, {**obs, "seed": rng.randrange(2**31)}, legal)
         opp_action = opp.act(legal_actions=legal, last_agent_action=last_agent_action)
         r0, r1 = payoff_fn(action, opp_action)
         total += r0
         history.append({"actions": {"p0": action, "p1": opp_action}, "rewards": {"p0": r0, "p1": r1}})
-        rounds.append(RoundResult(reasoning, action, opp_action, prompt))
+        rounds.append(RoundResult(reasoning, action, opp_action, prompt, ok, raw))
         opp.observe(action, opp_action)
         last_agent_action = action
 
@@ -236,16 +273,24 @@ def _run_one_shot(
         "legal_actions": legal,
         **(extra or {}),
     }
-    reasoning, action = agent.decide(obs)
-    if action not in legal and game != "negotiation":
-        action = legal[0]
+    obs["seed"] = rng.randrange(2**31)
+    if game == "negotiation":
+        # Proposals are tuples; the parser already coerces to a valid triple.
+        reasoning, action = agent.decide(obs)
+        meta = getattr(agent, "last_meta", None) or {}
+        ok, raw = meta.get("parsed_ok"), meta.get("raw_response")
+        if tuple(action) not in legal:
+            action, ok = legal[0], False
+        action = tuple(action)
+    else:
+        reasoning, action, ok, raw = _decide(agent, obs, legal)
     opp_action = opp.act(legal_actions=legal, last_agent_action=None)
     reward, _ = payoff_fn(action, opp_action)
     return EpisodeResult(
         game,
         opponent_name,
         float(reward),
-        [RoundResult(reasoning, action, opp_action, prompt)],
+        [RoundResult(reasoning, action, opp_action, prompt, ok, raw)],
     )
 
 
@@ -305,7 +350,8 @@ def _run_episode(game: str, agent, opponent_name: str, rng: random.Random, logge
         def neg_payoff(action, opp_action):
             a0 = tuple(action) if isinstance(action, (list, tuple)) else (1, 1, 1)
             a1 = tuple(opp_action) if isinstance(opp_action, (list, tuple)) else (1, 1, 1)
-            if all(a0[i] + a1[i] <= 4 for i in range(3)):
+            cap = config.BARGAIN_CAPACITY
+            if all(a0[i] + a1[i] <= cap for i in range(3)):
                 return float(3 * a0[0] + 4 * a0[1] + 3 * a0[2]), 0.0
             return 0.0, 0.0
 
@@ -368,10 +414,16 @@ def _run_episode(game: str, agent, opponent_name: str, rng: random.Random, logge
         guesses = list(range(101))
 
         def pb_payoff(action, opp_action):
-            avg = (int(action) + int(opp_action)) / 2
-            target = (2 / 3) * avg
-            dist = abs(int(action) - target)
-            return max(0.0, 100 - dist), 0.0
+            # Win indicator on the paper's 0-1 scale (Table 2 reports 0.50 for
+            # every model): closer to 2/3 of the mean wins 1, a tie gets 0.5.
+            # The previous 100-minus-distance reward (0-100) dominated CR(HO).
+            target = (2 / 3) * (int(action) + int(opp_action)) / 2
+            d0, d1 = abs(int(action) - target), abs(int(opp_action) - target)
+            if d0 < d1:
+                return 1.0, 0.0
+            if d0 > d1:
+                return 0.0, 1.0
+            return 0.5, 0.5
 
         return _run_one_shot(
             game,
@@ -406,18 +458,21 @@ def run_game_batch(
     skip_episodes: set[int] | None = None,
     on_episode: Callable[[int, EpisodeResult], None] | None = None,
     opponent_name: str | None = None,
+    split: str = "main",
 ) -> list[EpisodeResult]:
     results: list[EpisodeResult] = []
     skip = skip_episodes or set()
+    schedule = opponent_schedule(game, n_episodes, seed_base)
     for ep in range(n_episodes):
         ep_num = ep + 1
         if ep_num in skip:
             continue
-        opponent = opponent_name or _opponent_for_episode(game, ep, seed_base, n_episodes)
+        opponent = opponent_name or schedule[ep]
         if logger:
             logger.episode_start(game, ep_num, n_episodes, opponent)
-        rng = random.Random(episode_seed(game, ep, seed_base))
+        rng = random.Random(episode_seed(game, ep, seed_base, split))
         ep_result = _run_episode(game, agent, opponent, rng, logger)
+        ep_result.split = split
         if logger:
             logger.episode_done(game, ep_num, ep_result.cumulative_reward, len(ep_result.rounds))
         if on_episode is not None:
@@ -426,10 +481,11 @@ def run_game_batch(
     return results
 
 
-def episode_seed(game: str, episode_idx: int, seed_base: int = 0) -> int:
-    """Return the legacy per-episode RNG seed used by evaluation.
+def stable_hash(text: str) -> int:
+    """Process-independent hash (Python's ``hash`` is salted per process)."""
+    return zlib.crc32(text.encode("utf-8"))
 
-    Reproducibility across processes requires a fixed ``PYTHONHASHSEED`` because
-    the original protocol used Python's salted ``hash(game)``.
-    """
-    return seed_base + episode_idx * 997 + hash(game)
+
+def episode_seed(game: str, episode_idx: int, seed_base: int = 0, split: str = "main") -> int:
+    """Per-episode seed for the environment, the opponent and LLM sampling."""
+    return seed_base + episode_idx * 997 + stable_hash(f"{split}|{game}")

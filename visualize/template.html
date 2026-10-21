@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TRACE: Separating Action and Reasoning Teachers for Strategic SLM Training</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script>
+window.MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] }, svg: { fontCache: 'global' } };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<style>
+:root {
+  --primary: #b31b1b;
+  --accent: #801313;
+  --p1: #597481;
+  --solver: #b31b1b;
+  --frontier: #597481;
+  --credit: #3d3d3d;
+  --bg: #ffffff;
+  --text: #333;
+  --muted: #666;
+  --light: #f8f9fa;
+  --medium: #e9ecef;
+  --border: #dee2e6;
+  --ok: #2f7d4f;
+  --ok-bg: #edf7f0;
+  --bad: #b31b1b;
+  --bad-bg: #fdf2f2;
+  --warn-bg: #fff8e5;
+  --warn-border: #e6c55a;
+  --badge-bg: color-mix(in srgb, white 93%, var(--primary) 7%);
+  --badge-border: color-mix(in srgb, white 64%, var(--primary) 36%);
+}
+html { scroll-behavior: smooth; }
+* { box-sizing: border-box; }
+body {
+  font-family: 'Inter', sans-serif; line-height: 1.6; color: var(--text);
+  background: var(--bg); margin: 0; padding-top: 52px;
+}
+.container { max-width: 1000px; margin: 0 auto; padding: 0 20px; }
+a { color: #3273dc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; height: 52px; z-index: 1000;
+  background: rgba(251,251,253,0.92); backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+.nav-inner { max-width: 1200px; margin: 0 auto; height: 100%; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+.nav-title { font-weight: 700; color: #1a1a1a; letter-spacing: 0.02em; opacity: 0; transition: opacity .25s; }
+.nav.scrolled .nav-title { opacity: 1; }
+.nav-links { display: flex; gap: 4px; overflow-x: auto; }
+.nav-links a { font-size: .85rem; font-weight: 500; color: #444; padding: 5px 12px; border-radius: 6px; white-space: nowrap; }
+.nav-links a:hover { background: rgba(0,0,0,0.06); text-decoration: none; color: #1a1a1a; }
+.nav-links a.active { background: rgba(0,0,0,0.08); color: var(--primary); font-weight: 600; }
+
+/* Header */
+header { border-bottom: 1px solid var(--border); padding: 48px 0 40px; text-align: center; }
+h1 { font-size: 2.5rem; font-weight: 700; line-height: 1.2; margin: 0 0 20px; }
+h1 .acr { color: var(--primary); }
+.badge {
+  display: flex; width: fit-content; margin: 0 auto 18px; padding: 8px 18px; border-radius: 999px;
+  border: 1px solid var(--badge-border); background: var(--badge-bg); color: var(--primary);
+  font-size: .8rem; font-weight: 700; letter-spacing: .08em;
+}
+.authors { font-size: 1.1rem; margin: 0 0 6px; }
+.affil { font-size: .9rem; color: var(--muted); margin: 0; }
+.links { display: flex; justify-content: center; gap: 15px; margin-top: 24px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; background: #333; color: #fff; padding: 10px 20px;
+  border-radius: 30px; font-weight: 600; border: none; cursor: pointer; font-family: inherit; font-size: .95rem;
+  transition: background-color .2s;
+}
+.btn:hover { background: var(--primary); text-decoration: none; }
+.btn:disabled { background: #aaa; cursor: not-allowed; }
+.btn.ghost { background: transparent; color: #333; border: 1px solid var(--border); }
+.btn.ghost:hover { background: var(--light); color: var(--primary); }
+.btn.sm { padding: 6px 14px; font-size: .82rem; }
+
+/* Sections */
+main { padding: 40px 0; text-align: justify; }
+section { margin-bottom: 40px; padding-top: 20px; border-top: 1px solid var(--border); scroll-margin-top: 60px; }
+section:first-of-type { border-top: none; }
+h2 { font-size: 2rem; color: var(--primary); margin: 10px 0 4px; }
+h3 { font-size: 1.4rem; color: #444; margin: 28px 0 14px; border-left: 4px solid var(--primary); padding-left: 10px; }
+.caption { font-size: .9rem; color: var(--muted); font-style: italic; text-align: center; margin-top: 10px; }
+
+/* Key numbers */
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0 8px; }
+.kpi { border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; background: var(--light); text-align: left; }
+.kpi .label { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.kpi .val { font-size: 1.6rem; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.kpi .val .from { color: #999; font-weight: 400; }
+.kpi .val .to { color: var(--primary); }
+.kpi .note { font-size: .82rem; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+
+/* Pipeline */
+.pipeline { display: flex; align-items: stretch; gap: 0; margin: 26px 0 8px; }
+.stage { flex: 1; border: 1px solid var(--border); border-top: 4px solid var(--credit); border-radius: 8px; padding: 12px 12px; background: #fff; text-align: left; }
+.stage.solver { border-top-color: var(--solver); }
+.stage.frontier { border-top-color: var(--frontier); }
+.stage.pair { border-top-color: #1a1a1a; background: var(--light); }
+.stage .who { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.stage.solver .who { color: var(--solver); }
+.stage.frontier .who { color: var(--frontier); }
+.stage .name { font-weight: 700; margin: 2px 0 6px; font-size: .98rem; }
+.stage .what { font-size: .83rem; color: #555; line-height: 1.45; }
+.arrow { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; color: #aaa; }
+
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 10px; }
+.card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: left; }
+.card h4 { margin: 0 0 6px; font-size: 1.02rem; }
+.card p { margin: 0; font-size: .9rem; }
+.card.solver h4 { color: var(--solver); }
+.card.frontier h4 { color: var(--frontier); }
+.quote { border-left: 3px solid var(--frontier); background: var(--light); padding: 12px 16px; margin: 16px 0; font-size: .92rem; font-style: italic; }
+.algo { background: var(--light); border: 1px solid var(--border); border-radius: 6px; padding: 14px 18px; font-family: 'JetBrains Mono', monospace; font-size: .82rem; line-height: 1.7; white-space: pre; overflow-x: auto; text-align: left; }
+.algo .kw { color: var(--primary); font-weight: 600; }
+.algo .cm { color: #888; }
+
+/* Tables */
+.table-container { overflow-x: auto; margin: 20px 0; }
+table { width: 100%; border-collapse: collapse; font-size: .88rem; border-top: 2px solid var(--text); border-bottom: 2px solid var(--text); font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 12px; text-align: center; border: 1px solid var(--border); }
+th { background: var(--light); font-weight: 700; }
+td:first-child, th:first-child { text-align: left; }
+.section-row td { background: var(--medium); font-weight: 700; }
+.hl { background: #fdf2f2; }
+.hl td:first-child { font-weight: 700; color: var(--primary); }
+.ref td { color: var(--muted); }
+td.best { font-weight: 700; }
+td.neg { color: #8a1c1c; }
+
+/* Bars */
+.bars { margin: 18px auto 4px; max-width: 640px; }
+.bar-row { display: grid; grid-template-columns: 170px 1fr 56px; align-items: center; gap: 10px; margin: 8px 0; text-align: left; }
+.bar-row .name { font-size: .88rem; }
+.bar-track { height: 22px; background: var(--light); border-radius: 4px; position: relative; }
+.bar-fill { height: 100%; border-radius: 4px 4px 4px 4px; background: #9aa5ab; }
+.bar-row.us .bar-fill { background: var(--primary); }
+.bar-row.us .name { font-weight: 700; color: var(--primary); }
+.bar-row .num { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+
+/* Replay */
+.replay-head { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between; margin-top: 14px; }
+.replay-head select { font-family: inherit; font-size: .88rem; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; max-width: 100%; background: #fff; }
+.provenance { margin-top: 14px; padding: 10px 14px; border-radius: 8px; font-size: .86rem; text-align: left; border: 1px solid var(--border); background: var(--light); }
+.provenance.placeholder { background: var(--warn-bg); border-color: var(--warn-border); }
+.provenance strong { color: #1a1a1a; }
+.replay { display: flex; gap: 20px; margin-top: 18px; align-items: flex-start; }
+.pcol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.plabel { font-weight: 600; text-align: center; margin: 0; }
+#p0col .plabel { color: var(--primary); }
+#p1col .plabel { color: var(--p1); }
+.plabel small { display: block; font-weight: 400; color: var(--muted); font-size: .78rem; }
+.chat {
+  background: var(--light); border: 1px solid var(--border); border-radius: 8px; padding: 14px; height: 440px;
+  overflow-y: auto; font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: .78rem; white-space: pre-wrap;
+  text-align: left; line-height: 1.55; box-shadow: inset 0 2px 4px rgba(0,0,0,0.04);
+}
+.pcol.active .chat { border-color: var(--primary); }
+#p1col.active .chat { border-color: var(--p1); }
+.placeholder-text { color: #999; font-style: italic; }
+.rnd-head { display: block; font-family: 'Inter', sans-serif; font-weight: 700; font-size: .78rem; color: #1a1a1a; margin: 10px 0 4px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.rnd-head:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.tag { font-weight: 700; color: var(--primary); }
+.tag.ev { color: #8a5a00; }
+.tag.dec { color: #1a1a1a; text-decoration: underline; text-decoration-color: var(--primary); }
+.act-line { display: block; font-family: 'Inter', sans-serif; font-weight: 700; margin-top: 4px; }
+.cursor { display: inline-block; width: 7px; height: 1em; background: var(--text); vertical-align: text-bottom; animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.chip { display: inline-block; font-family: 'Inter', sans-serif; font-size: .72rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
+.chip.ok { background: var(--ok-bg); color: var(--ok); }
+.chip.bad { background: var(--bad-bg); color: var(--bad); }
+.chip.na { background: var(--medium); color: var(--muted); }
+.opp-rule { font-family: 'Inter', sans-serif; font-size: .82rem; color: #444; background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; display: block; white-space: normal; }
+
+.center { flex: 0 0 250px; display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 26px; }
+.matrix { border-collapse: separate; border-spacing: 4px; border: none; width: auto; font-size: .82rem; }
+.matrix th, .matrix td { border: none; padding: 0; }
+.matrix th { background: none; font-weight: 600; font-size: .74rem; color: var(--muted); padding: 2px 4px; text-align: center; }
+.matrix th.p0h { color: var(--primary); }
+.matrix th.p1h { color: var(--p1); }
+.matrix td.cell { width: 74px; height: 50px; border-radius: 6px; background: var(--light); border: 1px solid var(--border); text-align: center; font-weight: 600; transition: all .25s; }
+.matrix td.cell .u0 { color: var(--primary); }
+.matrix td.cell .u1 { color: var(--p1); }
+.matrix td.cell.on { background: #1a1a1a; border-color: #1a1a1a; }
+.matrix td.cell.on .u0, .matrix td.cell.on .u1, .matrix td.cell.on .sep { color: #fff; }
+.matrix .ax { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.timeline { width: 100%; }
+.tl-row { display: grid; grid-template-columns: 34px repeat(var(--n), 1fr); gap: 3px; align-items: center; margin: 3px 0; }
+.tl-row .who { font-size: .66rem; font-weight: 700; color: var(--muted); }
+.tl-cell { height: 20px; border-radius: 3px; background: var(--medium); font-size: .64rem; font-weight: 700; display: flex; align-items: center; justify-content: center; color: #fff; overflow: hidden; }
+.tl-cell.cur { outline: 2px solid #1a1a1a; outline-offset: 1px; }
+.score { text-align: center; }
+.score .big { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--primary); }
+.score .sub { font-size: .78rem; color: var(--muted); }
+#indicator { font-size: .84rem; font-weight: 600; text-align: center; min-height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.4; }
+.ctrls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.speed { font-size: .76rem; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.speed button { font-family: inherit; font-size: .74rem; border: 1px solid var(--border); background: #fff; border-radius: 4px; padding: 2px 7px; cursor: pointer; }
+.speed button.on { background: #333; color: #fff; border-color: #333; }
+.drop { margin-top: 12px; font-size: .84rem; color: var(--muted); text-align: left; }
+.drop label { color: #3273dc; cursor: pointer; font-weight: 600; }
+
+/* Notes */
+.callout { border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 6px; padding: 12px 16px; background: var(--light); margin: 16px 0; font-size: .92rem; text-align: left; }
+ul.tight li { margin: 4px 0; }
+
+/* Citation */
+.cite { position: relative; }
+.copy-btn { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.08); border: none; border-radius: 5px; padding: 5px 9px; cursor: pointer; color: #555; font-size: .85rem; }
+.copy-btn:hover { background: rgba(0,0,0,0.15); }
+pre { background: var(--light); padding: 20px; border-radius: 5px; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: .82rem; border: 1px solid var(--border); text-align: left; }
+footer { text-align: center; padding: 20px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: .88rem; background: var(--light); }
+
+@media (max-width: 800px) {
+  h1 { font-size: 1.8rem; }
+  .kpis, .cards { grid-template-columns: 1fr; }
+  .pipeline { flex-direction: column; }
+  .arrow { transform: rotate(90deg); height: 24px; flex-basis: 24px; }
+  .replay { flex-direction: column; align-items: stretch; }
+  .center { flex-basis: auto; padding-top: 0; order: -1; }
+  .chat { height: 300px; }
+  .bar-row { grid-template-columns: 110px 1fr 46px; }
+  .nav-title { display: none; }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <span class="nav-title">TRACE</span>
+    <div class="nav-links" id="navLinks">
+      <a href="#overview">Overview</a>
+      <a href="#replay">Replay</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#analysis">Analysis</a>
+      <a href="#limitations">Limitations</a>
+      <a href="#bibtex">BibTeX</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="container">
+    <h1><span class="acr">TRACE</span>: Separating Action and Reasoning<br>Teachers for Strategic SLM Training</h1>
+    <div class="badge">NeurIPS 2026 · UNDER REVIEW</div>
+    <p class="authors">Anonymous Author(s)</p>
+    <p class="affil">Teacher-separated Reasoning and Actions with Counterfactual Evaluation</p>
+    <div class="links">
+      <a class="btn" href="__PAPER_URL__" target="_blank" rel="noopener"><i class="fas fa-file-pdf"></i> Paper</a>
+      <a class="btn" href="__CODE_URL__" target="_blank" rel="noopener"><i class="fab fa-github"></i> Code</a>
+      <a class="btn" href="__MODEL_URL__" target="_blank" rel="noopener"><span aria-hidden="true">🤗</span> Checkpoints</a>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+<section id="overview">
+  <h2>Overview</h2>
+  <p>
+    Frontier LLMs can explain how an agent should respond to another player's behavior, yet often fail to execute that
+    strategy. Against <strong>tit-for-tat</strong> (TFT), an opponent that copies the model's previous action, Haiku 4.5,
+    Gemma 3–27B and Llama 3.3–70B all earn a cumulative reward of only <strong>1.50</strong>, exactly matching an untrained
+    Qwen 2.5–3B. They defect early, trigger retaliation and never recover, while writing fluent reasoning about reciprocity.
+    Standard distillation therefore has no better strategic <em>actions</em> to teach a small model.
+  </p>
+  <p>
+    <strong>TRACE</strong> is a preference-data recipe that assigns each training target to the source best equipped to provide it:
+  </p>
+  <ul class="tight">
+    <li><strong style="color:var(--solver)">Action teacher — exact game solver.</strong> Computes the action that would have earned the highest reward against the opponent's recorded move.</li>
+    <li><strong style="color:var(--frontier)">Reasoning teacher — frontier LLM.</strong> Writes supporting reasoning conditioned on the solver action and the preceding history, but never on the opponent's simultaneous move.</li>
+    <li><strong>Credit — counterfactual rollout.</strong> Rejects locally attractive actions that reduce return over the remaining horizon.</li>
+  </ul>
+
+  <h3>Key Results</h3>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Reward vs. tit-for-tat</div>
+      <div class="val"><span class="from">1.50 →</span> <span class="to">14.06</span></div>
+      <div class="note">TRACE-RW. All three frontier references stay at 1.50.</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Held-out reward (HO)</div>
+      <div class="val"><span class="from">−1.45 →</span> <span class="to">+1.91</span></div>
+      <div class="note">Haiku 4.5 reaches +2.05. In-domain reward is retained (13.93 vs. 14.04).</div>
+    </div>
+    <div class="kpi">
+      <div class="label">First-price auction</div>
+      <div class="val"><span class="from">−8.67 →</span> <span class="to">+4.97</span></div>
+      <div class="note">Auction receives solver-labelled pairs in RW, so this is learning from labels, not zero-shot transfer.</div>
+    </div>
+  </div>
+  <p class="caption">Qwen 2.5–3B-Instruct student, LoRA + sigmoid DPO, twelve two-player environments, n = 12 episodes per cell.</p>
+</section>
+
+<section id="replay">
+  <h2>Game Replay</h2>
+  <p>
+    Step through a full episode round by round. The left panel shows the agent's reasoning as it was generated; the right
+    panel shows the opponent's deterministic rule and move. The badge after each decision checks <em>reasoning–action
+    coupling</em>: whether the played action equals the argmax of the agent's own stated expected values.
+  </p>
+
+  <div class="replay-head">
+    <select id="epSelect" aria-label="Episode"></select>
+    <div class="ctrls">
+      <button class="btn ghost sm" id="prevBtn"><i class="fas fa-chevron-left"></i> Prev</button>
+      <button class="btn sm" id="nextBtn">Next round <i class="fas fa-chevron-right"></i></button>
+      <button class="btn ghost sm" id="playBtn"><i class="fas fa-play"></i> Auto</button>
+      <button class="btn ghost sm" id="resetBtn"><i class="fas fa-rotate-left"></i> Reset</button>
+    </div>
+  </div>
+  <div class="provenance" id="provenance"></div>
+
+  <div class="replay">
+    <div class="pcol" id="p0col">
+      <p class="plabel" id="p0label">Player 0<small>agent</small></p>
+      <div class="chat" id="p0chat"></div>
+    </div>
+    <div class="center">
+      <table class="matrix" id="matrix"></table>
+      <div class="timeline" id="timeline"></div>
+      <div class="score"><div class="big" id="score">0</div><div class="sub" id="scoreSub">cumulative reward</div></div>
+      <div id="indicator">Press <em>Next round</em> to start</div>
+      <div class="speed">Typing <button data-s="1" class="on">1×</button><button data-s="3">3×</button><button data-s="0">instant</button></div>
+    </div>
+    <div class="pcol" id="p1col">
+      <p class="plabel" id="p1label">Player 1<small>opponent</small></p>
+      <div class="chat" id="p1chat"></div>
+    </div>
+  </div>
+  <div class="drop">
+    Have an evaluation rollout? <label for="fileIn">Load a rollout <code>.jsonl</code></label> (e.g. <code>runs/&lt;id&gt;/…/rw.jsonl</code>) to replay it locally — nothing is uploaded.
+    <input type="file" id="fileIn" accept=".jsonl,.json" hidden>
+  </div>
+</section>
+
+<section id="method">
+  <h2>Method</h2>
+  <p>TRACE constructs round-level DPO pairs by assigning action, reasoning, and sequential credit to separate components.</p>
+
+  <div class="pipeline">
+    <div class="stage"><div class="who">Data</div><div class="name">Blind rollout</div><div class="what">Teacher plays against a heuristic opponent; record \(\tau_{\text{blind}} = (x, \rho^{\text{blind}}, a^{\text{blind}})\).</div></div>
+    <div class="arrow"><i class="fas fa-arrow-right"></i></div>
+    <div class="stage solver"><div class="who">Action teacher</div><div class="name">Solver best response</div><div class="what">\(a^* = \arg\max_a u_0(a, a^1_t)\) against the opponent's realised move.</div></div>
+    <div class="arrow"><i class="fas fa-arrow-right"></i></div>
+    <div class="stage"><div class="who">Credit</div><div class="name">Counterfactual filter</div><div class="what">Keep the flip only if \(R^{\text{HA}}_{\text{cf}}(t, a^*) > R(\tau_{\text{blind}})\).</div></div>
+    <div class="arrow"><i class="fas fa-arrow-right"></i></div>
+    <div class="stage frontier"><div class="who">Reasoning teacher</div><div class="name">No-leak paraphrase</div><div class="what">Frontier model writes \(\rho^*_t\) for \(a^*\) from history through \(t-1\) only.</div></div>
+    <div class="arrow"><i class="fas fa-arrow-right"></i></div>
+    <div class="stage pair"><div class="who">Output</div><div class="name">DPO pair</div><div class="what">\((\rho^*_t \oplus a^*) \succ (\rho^{\text{blind}}_t \oplus a^{0,\text{blind}}_t)\)</div></div>
+  </div>
+  <p class="caption">Figure 1. Each preference pair combines three independent sources: the solver supplies the action, the frontier model supplies the rationale, and an exact rollout supplies sequential credit.</p>
+
+  <h3>Solver-pinned best response</h3>
+  <p>
+    At round \(t\), the solver replaces the student's recorded action with the ex-post best response to the opponent's realised move:
+  </p>
+  \[ \mathrm{BR}_0(a^1_t) = \arg\max_{a \in A_0} u_0(a, a^1_t). \]
+  <p>
+    For matrix games the solver enumerates \(|A_0|\) payoffs against the recorded opponent column. In a first-price auction the
+    best response to bid \(b_1\) is the smallest legal bid above \(b_1\) when the private value exceeds it, and zero otherwise. In
+    three-issue bargaining with capacity \(c\), the take-the-rest proposal \(p_0[i] = c - p_1[i]\) maximises utility. Because the
+    opponent's current move is hidden at decision time, this label is a hindsight candidate until the horizon filter accounts for retaliation.
+  </p>
+
+  <h3>No-leakage frontier paraphrase</h3>
+  <p>The solver gives no natural-language supervision, so Haiku 4.5 writes reasoning that supports the solver action under one central constraint:</p>
+  <div class="quote">
+    The other player's current-round move is not observable at decision time. Never reference it as observed. Express the decision
+    as belief-state reasoning from the prior history; expected-value arithmetic must average over posterior opponent types; and the
+    final decision must match the supplied solver action.
+  </div>
+  <p>
+    Across 688 final oracle rounds, a regex audit and manual inspection found no current-move leakage. Replacing Haiku with Sonnet as
+    paraphraser in a 30-episode pilot produced no further reward gains: once the action is supplied, the paraphraser only has to
+    express a consistent rationale.
+  </p>
+
+  <h3>Counterfactual horizon filter</h3>
+  <p>
+    The best response is myopic: against a cooperator it recommends defection even when retaliation makes that choice harmful. Because
+    training opponents are deterministic, each candidate is evaluated by exact rollout. The horizon-aware value is
+  </p>
+  \[ V(s, h_s) = \max_{a \in A_0} \Big[ u_0\big(a, \pi_{\text{opp}}(h_s)\big) + V\big(s+1,\; h_s \oplus (a, \pi_{\text{opp}}(h_s))\big) \Big], \qquad V(T,\cdot) = 0, \]
+  <p>
+    and a pair is emitted only when the recorded prefix, the candidate's stage reward and \(V(t+1, h^*_{t+1})\) together exceed the
+    recorded return. For \(T \le 10\) with binary actions, exhaustive evaluation is cheap.
+  </p>
+
+<div class="algo"><span class="kw">Algorithm 1</span>  TRACE data construction (per episode)
+ 1: Roll out blind trajectory τ_blind = (x, ρ_blind, a_blind)
+ 2: <span class="kw">for</span> round t = 0, …, T−1 <span class="kw">do</span>
+ 3:     a* ← BR₀(a¹_t)                         <span class="cm">// solver best response</span>
+ 4:     <span class="kw">if</span> a* ≠ a⁰_t,blind <span class="kw">then</span>
+ 5:         compute exact return (Eq. 2 or Eq. 3)
+ 6:         <span class="kw">if</span> counterfactual return &gt; R(τ_blind) <span class="kw">then</span>
+ 7:             generate no-leak reasoning ρ*_t; emit pair
+ 8:         <span class="kw">end if</span>
+ 9:     <span class="kw">end if</span>
+10: <span class="kw">end for</span></div>
+
+  <h3>Training</h3>
+  <p>
+    Qwen 2.5–3B-Instruct, LoRA (r = 16, α = 32, dropout 0.05), sigmoid DPO with β = 0.1, learning rate 5×10<sup>−5</sup> cosine with
+    5% warmup, effective batch 8, environment-token loss masking, checkpoint selected by held-out DPO loss. A single L40S GPU at
+    13–14 GB peak memory.
+  </p>
+  __TABLE5__
+</section>
+
+<section id="results">
+  <h2>Results</h2>
+  <p>
+    Eight in-domain (ID) environments: three repeated-PD payoff variants, repeated stag hunt, bargaining, Battle of the Sexes, Matching
+    Pennies and tic-tac-toe. Four structurally distinct held-out (HO) environments: first-price auction, divide-the-dollar, p-beauty and a
+    one-shot PD stage game. Auction later receives solver-labelled training pairs, so “HO” denotes the benchmark split, not strict zero-shot.
+  </p>
+
+  <h3>Solver labels recover what scale does not</h3>
+  __TABLE1__
+  <p class="caption">Table 1. Aggregate cumulative reward and TFT reward. “Frontier DPO” is the better of the two baselines trained on frontier actions.</p>
+
+  <h3>Reward against tit-for-tat</h3>
+  <div class="bars" id="tftBars"></div>
+  <p class="caption">Figure 2. Against TFT, base and all three frontier references score 1.50; every TRACE mix reaches at least 12.88. Frontier-action DPO leaves TFT reward unchanged.</p>
+
+  <h3>Per-game breakdown</h3>
+  __TABLE2__
+  <p class="caption">Table 2. Cumulative reward per game for trained 3B variants (best 3B variant in bold) vs. Haiku 4.5. The HO gain concentrates in the auction; the three strictly unseen HO games move little.</p>
+</section>
+
+<section id="analysis">
+  <h2>Analysis</h2>
+
+  <h3>Reasoning–action coupling</h3>
+  <p>
+    Coupling is the fraction of parsable rounds whose action equals the argmax of the model's stated expected values. It is a diagnostic,
+    not an optimisation target: <strong>actions can consistently follow stated reasoning and still be strategically wrong.</strong>
+    Frontier models' actions contradict the argmax of their own stated EVs in 15–70% of final rounds, depending on model and game.
+  </p>
+  __TABLE3__
+  <p class="caption">Table 3. fc = final-round coupling, ac = all-round coupling. Best 3B variant per column in bold.</p>
+
+  <h3>Specialist adapters combine by plain averaging</h3>
+  <p>
+    The auction-heavy AUX adapter and the repeated-game-heavy ALL adapter are complementary. Averaging all 504 corresponding LoRA tensors,
+    \(W_{\text{merge}} = \tfrac12 W_{\text{AUX}} + \tfrac12 W_{\text{ALL}}\), with no further training reaches 13.92 ID and +1.75 HO reward,
+    against 13.93 and +1.91 for the reweighted retrain (RW).
+  </p>
+
+  <h3>The failed precursor: coupling-filtered frontier DPO</h3>
+  <p>
+    Before TRACE, a full DPO pipeline pinned chosen-side actions to the frontier model's own play and kept only “coupled” trajectories. The
+    thesis did not survive the data: ID final-round coupling fell from 0.77 (base) to 0.66 with the filter and 0.55 without it, and neither
+    variant reached positive HO reward. The filter selected a narrower slice of essentially the same action distribution — it could remove
+    internally inconsistent traces, but not a prior, payoff estimate or action that was consistently reasoned yet strategically wrong.
+    TRACE changes the object being supervised: the chosen action itself comes from the solver.
+  </p>
+</section>
+
+<section id="limitations">
+  <h2>Limitations</h2>
+  <ul class="tight">
+    <li>Each game cell contains n = 12 episodes, so differences below roughly 0.2 CR should be read as ties.</li>
+    <li>One 3B base, one solver family, one paraphraser and deterministic training opponents. Stochastic opponents would need estimated counterfactuals; tic-tac-toe needs a sequential solver such as minimax.</li>
+    <li>Solver labels and the horizon filter are introduced together, so their contributions are not separately identified.</li>
+    <li>TRACE does not surpass Haiku 4.5 in aggregate ID reward or in coupling.</li>
+    <li>Matching Pennies and tic-tac-toe score zero for every model under the current reward metric and do not separate variants.</li>
+  </ul>
+</section>
+
+<section id="bibtex">
+  <h2>BibTeX</h2>
+  <div class="cite">
+    <button class="copy-btn" id="copyBib" title="Copy BibTeX"><i class="far fa-copy"></i></button>
+<pre id="bib">@inproceedings{anonymous2026trace,
+  title     = {{TRACE}: Separating Action and Reasoning Teachers for Strategic {SLM} Training},
+  author    = {Anonymous},
+  booktitle = {Submitted to Advances in Neural Information Processing Systems},
+  year      = {2026}
+}</pre>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Page layout adapted from the <a href="https://thu-nics.github.io/MARSHAL/" target="_blank" rel="noopener">MARSHAL</a> project page.
+</footer>
+
+<script id="replay-data" type="application/json">__REPLAY_DATA__</script>
+<script>
+(() => {
+  /* ---------- nav ---------- */
+  const nav = document.getElementById('nav');
+  const links = [...document.querySelectorAll('#navLinks a')];
+  const secs = links.map(a => document.querySelector(a.getAttribute('href')));
+  const onScroll = () => {
+    nav.classList.toggle('scrolled', window.scrollY > 220);
+    let cur = 0;
+    secs.forEach((s, i) => { if (s && s.getBoundingClientRect().top < 120) cur = i; });
+    links.forEach((a, i) => a.classList.toggle('active', i === cur && window.scrollY > 220));
+  };
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+
+  document.getElementById('copyBib').addEventListener('click', e => {
+    const t = document.getElementById('bib').innerText;
+    const done = () => { e.currentTarget.innerHTML = '<i class="fas fa-check"></i>'; setTimeout(() => e.target.closest('button').innerHTML = '<i class="far fa-copy"></i>', 1400); };
+    try { navigator.clipboard.writeText(t).then(done, done); } catch (_) { done(); }
+  });
+
+  /* ---------- TFT bars ---------- */
+  const tft = __TFT_BARS__;
+  const maxV = Math.max(...tft.map(d => d.v));
+  document.getElementById('tftBars').innerHTML = tft.map(d =>
+    `<div class="bar-row${d.us ? ' us' : ''}"><div class="name">${d.name}</div>` +
+    `<div class="bar-track"><div class="bar-fill" style="width:${(d.v / maxV * 100).toFixed(1)}%"></div></div>` +
+    `<div class="num">${d.v.toFixed(2)}</div></div>`).join('');
+
+  /* ---------- replay ---------- */
+  const OPP_RULES = {
+    tit_for_tat: 'Tit-for-tat: cooperates in round 1, then copies your previous move.',
+    grim_trigger: 'Grim trigger: cooperates until you defect once, then defects forever.',
+    pavlov: 'Pavlov (win-stay, lose-shift): repeats its move after a good payoff, switches after a bad one.',
+    tit_for_two_tats: 'Tit-for-two-tats: defects only after you defect twice in a row.',
+    generous_tft: 'Generous TFT: like tit-for-tat but sometimes forgives a defection.',
+    always_cooperate: 'Always cooperate: plays the cooperative action every round.',
+    always_defect: 'Always defect: plays the non-cooperative action every round.',
+    random: 'Random: picks uniformly among legal actions.',
+    epsilon_greedy: 'ε-greedy: mostly exploits its best-known action, occasionally random.',
+    truthful_bidder: 'Truthful bidder: bids its private value.',
+  };
+  const PALETTE = ['#2f7d4f', '#8a1c1c', '#8a5a00', '#597481', '#5b4b8a'];
+
+  const $ = id => document.getElementById(id);
+  const sel = $('epSelect'), p0 = $('p0chat'), p1 = $('p1chat');
+  let DATA = JSON.parse($('replay-data').textContent);
+  let ep = null, k = 0, typing = null, auto = null, speed = 1, payoff = null, actions = [];
+
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const fmt = v => (Number.isInteger(v) ? v : (+v).toFixed(2)).toString();
+  const colorizeTags = html => html
+    .replace(/\[(prior|update|belief|history)\]/gi, m => `<span class="tag">${m}</span>`)
+    .replace(/\[(ev|expected value)\]/gi, m => `<span class="tag ev">${m}</span>`)
+    .replace(/\[(decision)\]/gi, m => `<span class="tag dec">${m}</span>`);
+
+  function parsePayoff(prompt) {
+    const re = /If you play (\S+) and opp plays (\S+):\s*\((-?[\d.]+),\s*(-?[\d.]+)\)/g;
+    const m = {}, rows = [], cols = [];
+    let r;
+    while ((r = re.exec(prompt || ''))) {
+      m[r[1] + '|' + r[2]] = [parseFloat(r[3]), parseFloat(r[4])];
+      if (!rows.includes(r[1])) rows.push(r[1]);
+      if (!cols.includes(r[2])) cols.push(r[2]);
+    }
+    return rows.length ? { m, rows, cols } : null;
+  }
+  // EV(X) = ... = number   — the last number after the last '=' in each EV(X) clause.
+  function parseEV(text) {
+    const out = {};
+    const re = /EV\(\s*([^)]+?)\s*\)\s*=([^]*?)(?=EV\(|\[|\n\s*\n|$)/gi;
+    let m;
+    while ((m = re.exec(text || ''))) {
+      const body = m[2].split(/[;\n]/)[0];
+      const parts = body.split('=');
+      const nums = parts[parts.length - 1].match(/-?\d+(?:\.\d+)?/);
+      if (nums) out[m[1].trim()] = parseFloat(nums[0]);
+    }
+    return out;
+  }
+  function coupling(round) {
+    const ev = parseEV(round.reasoning);
+    const keys = Object.keys(ev);
+    if (keys.length < 2) return { cls: 'na', txt: 'EV not parsable' };
+    const best = Math.max(...keys.map(x => ev[x]));
+    const argmax = keys.filter(x => ev[x] === best);
+    const act = String(round.agent_action);
+    const ok = argmax.some(x => x.toLowerCase() === act.toLowerCase());
+    return ok ? { cls: 'ok', txt: `coupled · EV argmax ${argmax.join('/')}` }
+              : { cls: 'bad', txt: `decoupled · EV argmax ${argmax.join('/')}` };
+  }
+  function stageReward(round) {
+    if (payoff) {
+      const v = payoff.m[round.agent_action + '|' + round.opponent_action];
+      return v ? v[0] : null;
+    }
+    // First-price auction: value - bid if strictly above the opponent bid, else 0.
+    const val = /private value is (-?[\d.]+)/i.exec(round.prompt || '');
+    const bid = parseFloat(round.agent_action), opp = parseFloat(round.opponent_action);
+    if (val && !isNaN(bid) && !isNaN(opp)) return bid > opp ? parseFloat(val[1]) - bid : 0;
+    return null;
+  }
+
+  function renderSelect() {
+    sel.innerHTML = DATA.episodes.map((e, i) =>
+      `<option value="${i}">${esc(e.game)} · vs ${esc(e.opponent)} · ep ${esc(e.episode)} · CR ${fmt(e.cumulative_reward)}</option>`).join('');
+  }
+  function renderProvenance() {
+    const m = DATA.meta || {};
+    const box = $('provenance');
+    box.className = 'provenance' + (m.placeholder ? ' placeholder' : '');
+    box.innerHTML = (m.placeholder ? '<i class="fas fa-triangle-exclamation"></i> ' : '<i class="fas fa-circle-info"></i> ') +
+      `<strong>Source:</strong> ${esc(m.model || 'unknown model')} — ${esc(m.source || '')}` + (m.note ? `<br>${m.note}` : '');
+    $('p0label').innerHTML = `${esc(m.agent_label || 'Agent')}<small>Player 0 · reasoning + action</small>`;
+  }
+
+  function load(i) {
+    stopAuto(); clearTyping();
+    ep = DATA.episodes[i];
+    payoff = parsePayoff(ep.rounds[0] && ep.rounds[0].prompt);
+    actions = payoff ? payoff.rows : [...new Set(ep.rounds.map(r => String(r.agent_action)))];
+    $('p1label').innerHTML = `${esc(ep.opponent)}<small>Player 1 · deterministic heuristic</small>`;
+    k = 0;
+    renderMatrix(null); renderTimeline(); renderScore();
+    p0.innerHTML = '<span class="placeholder-text">Agent reasoning appears here, one round at a time.</span>';
+    p1.innerHTML = `<span class="opp-rule">${esc(OPP_RULES[ep.opponent] || ep.opponent)}</span>`;
+    $('indicator').innerHTML = `Round 0 / ${ep.rounds.length}<br><span style="font-weight:400;color:var(--muted)">Press <em>Next round</em></span>`;
+    $('p0col').classList.remove('active'); $('p1col').classList.remove('active');
+    updateButtons();
+  }
+
+  function renderMatrix(cur) {
+    const t = $('matrix');
+    if (!payoff) { t.innerHTML = '<tr><td style="font-size:.8rem;color:var(--muted);border:none">No payoff matrix in prompt (non-matrix game).</td></tr>'; return; }
+    let h = `<tr><th></th><th colspan="${payoff.cols.length}" class="ax p1h">opponent</th></tr><tr><th></th>` +
+      payoff.cols.map(c => `<th class="p1h">${esc(c)}</th>`).join('') + '</tr>';
+    payoff.rows.forEach((r, ri) => {
+      h += `<tr><th class="p0h">${ri === 0 ? '<span class="ax">agent</span><br>' : ''}${esc(r)}</th>` + payoff.cols.map(c => {
+        const v = payoff.m[r + '|' + c] || ['–', '–'];
+        const on = cur && String(cur.agent_action) === r && String(cur.opponent_action) === c;
+        return `<td class="cell${on ? ' on' : ''}"><span class="u0">${fmt(v[0])}</span><span class="sep">, </span><span class="u1">${fmt(v[1])}</span></td>`;
+      }).join('') + '</tr>';
+    });
+    t.innerHTML = h;
+  }
+  function colorFor(a) {
+    const i = actions.indexOf(String(a));
+    return PALETTE[(i < 0 ? actions.length : i) % PALETTE.length];
+  }
+  function renderTimeline() {
+    const n = ep.rounds.length;
+    const row = (who, key) => `<div class="tl-row" style="--n:${n}"><span class="who">${who}</span>` +
+      ep.rounds.map((r, i) => i < k
+        ? `<div class="tl-cell${i === k - 1 ? ' cur' : ''}" style="background:${colorFor(r[key])}" title="Round ${i + 1}: ${esc(r[key])}">${esc(String(r[key]).slice(0, 3))}</div>`
+        : '<div class="tl-cell"></div>').join('') + '</div>';
+    $('timeline').innerHTML = row('YOU', 'agent_action') + row('OPP', 'opponent_action');
+  }
+  function renderScore() {
+    let s = 0, any = false;
+    for (let i = 0; i < k; i++) { const v = stageReward(ep.rounds[i]); if (v !== null) { s += v; any = true; } }
+    const done = k === ep.rounds.length;
+    $('score').textContent = any ? fmt(s) : (done ? fmt(ep.cumulative_reward) : '—');
+    $('scoreSub').textContent = k === ep.rounds.length ? `final cumulative reward (logged: ${fmt(ep.cumulative_reward)})` : 'cumulative reward so far';
+  }
+
+  function roundHTML(i, body) {
+    return `<span class="rnd-head">Round ${i + 1}</span>${body}`;
+  }
+  function decisionHTML(r) {
+    const c = coupling(r);
+    return `<span class="act-line">→ plays ${esc(r.agent_action)}<span class="chip ${c.cls}">${esc(c.txt)}</span></span>`;
+  }
+  function oppHTML(i, r) {
+    const sr = stageReward(r);
+    return `<span class="rnd-head">Round ${i + 1}</span><span class="act-line" style="color:var(--p1)">→ plays ${esc(r.opponent_action)}</span>` +
+      (sr !== null ? `<span style="font-family:Inter;font-size:.76rem;color:var(--muted)">agent stage reward: ${fmt(sr)}</span>` : '');
+  }
+
+  function rebuild(upto) {
+    // Static render of rounds [0, upto) without animation.
+    p0.innerHTML = ep.rounds.slice(0, upto).map((r, i) =>
+      roundHTML(i, colorizeTags(esc(r.reasoning || '(no reasoning logged)')) + decisionHTML(r))).join('') ||
+      '<span class="placeholder-text">Agent reasoning appears here, one round at a time.</span>';
+    p1.innerHTML = `<span class="opp-rule">${esc(OPP_RULES[ep.opponent] || ep.opponent)}</span>` +
+      ep.rounds.slice(0, upto).map((r, i) => oppHTML(i, r)).join('');
+    p0.scrollTop = p0.scrollHeight; p1.scrollTop = p1.scrollHeight;
+  }
+
+  function finishRound() {
+    const r = ep.rounds[k - 1];
+    renderMatrix(r); renderTimeline(); renderScore();
+    p1.insertAdjacentHTML('beforeend', oppHTML(k - 1, r)); p1.scrollTop = p1.scrollHeight;
+    $('p0col').classList.remove('active'); $('p1col').classList.add('active');
+    const sr = stageReward(r);
+    $('indicator').innerHTML = `Round ${k} / ${ep.rounds.length}<br><span style="font-weight:400">${esc(r.agent_action)} vs ${esc(r.opponent_action)}` +
+      (sr !== null ? ` → +${fmt(sr)}` : '') + '</span>';
+    updateButtons();
+    if (auto) auto = setTimeout(() => (k < ep.rounds.length ? next() : stopAuto()), 900 / Math.max(speed, 1));
+  }
+
+  function clearTyping() { if (typing) { clearInterval(typing.timer); typing = null; } }
+  function completeTyping() {
+    if (!typing) return;
+    const t = typing; clearTyping();
+    t.node.innerHTML = colorizeTags(esc(t.text)) + decisionHTML(t.round);
+    p0.scrollTop = p0.scrollHeight;
+    finishRound();
+  }
+
+  function next() {
+    if (typing) { completeTyping(); return; }
+    if (k >= ep.rounds.length) return;
+    const r = ep.rounds[k];
+    if (k === 0) p0.innerHTML = '';
+    k++;
+    $('p0col').classList.add('active'); $('p1col').classList.remove('active');
+    $('indicator').innerHTML = `Round ${k} / ${ep.rounds.length}<br><span style="font-weight:400;color:var(--muted)">agent is reasoning…</span>`;
+    p0.insertAdjacentHTML('beforeend', `<span class="rnd-head">Round ${k}</span><span class="typing"></span>`);
+    const node = p0.lastElementChild;
+    const text = r.reasoning || '(no reasoning logged)';
+    if (speed === 0) { typing = { node, text, round: r, timer: null }; completeTyping(); return; }
+    const perTick = Math.max(1, Math.ceil(text.length / (110 / speed)));
+    let pos = 0;
+    typing = { node, text, round: r, timer: setInterval(() => {
+      pos += perTick;
+      if (pos >= text.length) { completeTyping(); return; }
+      node.innerHTML = colorizeTags(esc(text.slice(0, pos))) + '<span class="cursor"></span>';
+      p0.scrollTop = p0.scrollHeight;
+    }, 16) };
+    updateButtons();
+  }
+  function prev() {
+    stopAuto(); clearTyping();
+    if (k <= 0) return;
+    k--;
+    rebuild(k);
+    renderMatrix(k ? ep.rounds[k - 1] : null); renderTimeline(); renderScore();
+    $('indicator').innerHTML = `Round ${k} / ${ep.rounds.length}`;
+    updateButtons();
+  }
+  function stopAuto() { if (auto) { clearTimeout(auto); } auto = null; $('playBtn').innerHTML = '<i class="fas fa-play"></i> Auto'; }
+  function updateButtons() {
+    $('prevBtn').disabled = k === 0 && !typing;
+    $('nextBtn').disabled = k >= ep.rounds.length && !typing;
+    $('nextBtn').innerHTML = typing ? 'Skip typing <i class="fas fa-forward"></i>' : 'Next round <i class="fas fa-chevron-right"></i>';
+  }
+
+  $('nextBtn').addEventListener('click', () => { stopAuto(); next(); });
+  $('prevBtn').addEventListener('click', prev);
+  $('resetBtn').addEventListener('click', () => load(+sel.value));
+  $('playBtn').addEventListener('click', () => {
+    if (auto) { stopAuto(); return; }
+    if (k >= ep.rounds.length) load(+sel.value);
+    auto = true; $('playBtn').innerHTML = '<i class="fas fa-pause"></i> Pause';
+    if (!typing) next();
+  });
+  sel.addEventListener('change', () => load(+sel.value));
+  document.querySelectorAll('.speed button').forEach(b => b.addEventListener('click', () => {
+    speed = +b.dataset.s;
+    document.querySelectorAll('.speed button').forEach(x => x.classList.toggle('on', x === b));
+  }));
+
+  $('fileIn').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    const text = await f.text();
+    const eps = [];
+    text.split('\n').forEach(line => {
+      line = line.trim(); if (!line) return;
+      try {
+        const row = JSON.parse(line);
+        if (Array.isArray(row.rounds) && row.rounds.length) eps.push(row);
+      } catch (_) { /* skip malformed line */ }
+    });
+    if (!eps.length) { alert('No episodes with a "rounds" array found in this file.'); return; }
+    DATA = { meta: { model: f.name.replace(/\.jsonl?$/, ''), agent_label: 'Qwen 2.5–3B + ' + f.name.replace(/\.jsonl?$/, '').toUpperCase(),
+      source: `local file ${f.name} (${eps.length} episodes)`, placeholder: false }, episodes: eps };
+    renderSelect(); renderProvenance(); load(0);
+  });
+
+  renderSelect(); renderProvenance(); load(0);
+})();
+</script>
+</body>
+</html>

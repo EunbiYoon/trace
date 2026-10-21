@@ -1,5 +1,7 @@
 # Training pipeline
 
+Project page: <https://eunbiyoon.github.io/trace/> (source in [`visualize/`](visualize/)).
+
 Run all commands from the repository root. These instructions assume a single
 node with at least three visible GPUs. Complete each stage before starting the next.
 
